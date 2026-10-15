@@ -4,19 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "portfolio-manager"
-version = "0.1.0"
-description = "IBKR target-weight rebalancer for a core-satellite ETF portfolio (dry-run first)"
+version = "0.2.0"
+description = "IBKR target-weight rebalancer for a core-satellite ETF portfolio, with a local web screen"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0", "requests>=2.31"]
+dependencies = [
+    "PyYAML>=6.0",
+    "requests>=2.31",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "anthropic>=0.40",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "httpx>=0.27"]
 
 [project.scripts]
 rebalancer = "rebalancer.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rebalancer*"]
+
+[tool.setuptools.package-data]
+rebalancer = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

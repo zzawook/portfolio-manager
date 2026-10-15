@@ -8,10 +8,11 @@ from pathlib import Path
 from .brokers.ibkr import GatewayClient, IbkrBroker, IbkrError, account_id_for, resolve_candidates
 from .brokers.mock import MockBroker
 from .config import Config, ConfigError, load_config
+from .envfile import load_env_file
 from .execute import ExecutionAborted, run_execute
 from .planner import REBALANCE, PlanError, build_plan
 from .report import format_check, format_plan
-from .state import State
+from .state import State, state_path_for
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -32,19 +33,18 @@ def _parser() -> argparse.ArgumentParser:
             sp.add_argument("--force", action="store_true", help="이번 달에 이미 실행했어도 다시 실행")
 
     sub.add_parser("resolve", help="IBKR에서 종목별 conid 후보 찾기")
+
+    sp = sub.add_parser("ui", help="로컬 웹 화면 열기 (비중 보기, 편집, Claude 채팅, 주문)")
+    sp.add_argument("--broker", choices=["mock", "ibkr"], help="설정의 broker.type 대신 쓸 브로커")
+    sp.add_argument("--mock-file", help="모의 계좌 파일 (mock 브로커용)")
+    sp.add_argument("--today", help="날짜 지정 (YYYY-MM-DD, 테스트용)")
+    sp.add_argument("--port", type=int, default=8765, help="포트 (기본 8765)")
+    sp.add_argument("--no-browser", action="store_true", help="브라우저를 자동으로 열지 않기")
     return p
 
 
 def _broker_kind(cfg: Config, args) -> str:
     return getattr(args, "broker", None) or cfg.broker.type
-
-
-def _state_path(cfg_path: str, kind: str, override: str | None) -> Path:
-    """Practice runs on the mock broker keep their own state so they never block a real run."""
-    if override:
-        return Path(override)
-    name = "state.json" if kind == "ibkr" else "state.mock.json"
-    return Path(cfg_path).resolve().parent / name
 
 
 def _broker(cfg: Config, args) -> object:
@@ -62,10 +62,12 @@ def _today(args) -> date:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    # API keys and the IBKR account number can live in .env next to config.yaml (kept out of git).
+    load_env_file(Path(args.config).resolve().parent / ".env")
     try:
         cfg = load_config(args.config)
         kind = "ibkr" if args.command in ("check", "resolve") else _broker_kind(cfg, args)
-        state = State(_state_path(args.config, kind, args.state))
+        state = State(state_path_for(args.config, kind, args.state))
 
         if args.command == "check":
             print(format_check(cfg))
@@ -81,7 +83,20 @@ def main(argv: list[str] | None = None) -> int:
             settings = cfg.broker.ibkr
             client = GatewayClient(settings.base_url, account_id_for(cfg), settings.verify_ssl)
             print("\n".join(resolve_candidates(cfg, client)))
-            print("\nLSE 달러 라인의 conid를 config.yaml의 instruments에 채워 넣으세요.")
+            print("\nLSE 달러 라인의 conid를 portfolio.yaml의 instruments에 채우거나, 웹 화면에서 'IBKR에서 conid 찾기'로 고르세요.")
+            return 0
+
+        if args.command == "ui":
+            from .server import serve
+
+            serve(
+                args.config,
+                broker_kind=args.broker,
+                mock_file=args.mock_file,
+                today=_today(args) if args.today else None,
+                port=args.port,
+                open_browser=not args.no_browser,
+            )
             return 0
 
         broker = _broker(cfg, args)

@@ -15,6 +15,14 @@ def month_key(d: date) -> str:
     return f"{d.year}-{d.month:02d}"
 
 
+def state_path_for(config_path: str | Path, broker_kind: str, override: str | Path | None = None) -> Path:
+    """Practice runs on the mock broker keep their own state so they never block a real run."""
+    if override:
+        return Path(override)
+    name = "state.json" if broker_kind == "ibkr" else "state.mock.json"
+    return Path(config_path).resolve().parent / name
+
+
 class State:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -48,6 +56,13 @@ class State:
         self.data["executions"][key] = entry
         if rebalanced_year is not None:
             self.data["last_rebalance_year"] = rebalanced_year
+
+    def extend_execution(self, key: str, results: list[dict]) -> None:
+        """Add the buy step of a two-step rebalance to the month's record."""
+        self.data["executions"][key]["orders"].extend(results)
+
+    def execution(self, key: str) -> Optional[dict]:
+        return self.data["executions"].get(key)
 
     def target_changes(self, cfg: Config) -> list[dict]:
         """Differences between the config targets and the ones recorded at the last execution."""

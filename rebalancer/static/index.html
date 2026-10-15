@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="session-token" content="__SESSION_TOKEN__">
+<title>포트폴리오 리밸런서</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body data-pane="weights">
+<a class="skip" href="#weights">목표 비중으로 건너뛰기</a>
+
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <h1>포트폴리오</h1>
+      <span class="chip" id="broker-chip"></span>
+      <span class="month" id="month-status"></span>
+    </div>
+    <div class="top-actions">
+      <span class="as-of" id="as-of" aria-live="polite"></span>
+      <button type="button" class="btn ghost small" id="refresh">잔고 새로고침</button>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <div class="main-col">
+    <section class="overview" aria-labelledby="overview-title">
+      <div class="donut-wrap">
+        <svg id="donut" viewBox="0 0 300 300" role="group" aria-labelledby="overview-title"></svg>
+      </div>
+      <div class="overview-side">
+        <nav class="crumbs" id="crumbs" aria-label="차트 위치"></nav>
+        <h2 id="overview-title" class="overview-title">지금 비중</h2>
+        <ul class="legend" id="legend"></ul>
+        <p class="hint" id="donut-hint"></p>
+      </div>
+    </section>
+    <div class="notice" id="holdings-notice" hidden></div>
+
+    <div class="pane-switch" role="tablist" aria-label="화면 선택">
+      <button type="button" role="tab" id="tab-weights" aria-controls="weights" aria-selected="true">목표 비중</button>
+      <button type="button" role="tab" id="tab-chat" aria-controls="chat" aria-selected="false">채팅</button>
+    </div>
+
+    <section id="weights" class="weights" aria-labelledby="weights-title" tabindex="-1">
+      <div class="section-head">
+        <h2 id="weights-title">목표 비중</h2>
+        <p class="sum" id="sum" aria-live="polite"></p>
+      </div>
+      <ul class="problems" id="problems" hidden></ul>
+      <fieldset class="groups" id="groups"></fieldset>
+    </section>
+  </div>
+
+  <aside id="chat" class="chat" aria-labelledby="chat-title">
+    <div class="chat-head">
+      <div>
+        <h2 id="chat-title">비중 조정 채팅</h2>
+        <p class="chat-model" id="chat-model"></p>
+      </div>
+      <button type="button" class="btn ghost small" id="chat-reset">새 대화</button>
+    </div>
+    <p class="chat-note">대화로는 초안만 바뀌어요. 주문은 아래 '주문 계획 보기'에서 직접 보내야 나가요.</p>
+    <div class="chat-log" id="chat-log" aria-live="polite"></div>
+    <form class="chat-form" id="chat-form">
+      <label for="chat-input" class="visually-hidden">메시지</label>
+      <textarea id="chat-input" rows="2" placeholder="예: 방산을 5%로 줄이고 그만큼 VWRA에 넣어 줘"></textarea>
+      <button type="submit" class="btn primary" id="chat-send">보내기</button>
+    </form>
+  </aside>
+</main>
+
+<footer class="draft-bar">
+  <div class="draft-inner">
+    <div class="draft-status" id="draft-status" aria-live="polite"></div>
+    <div class="draft-actions">
+      <button type="button" class="btn" id="job-open" hidden>주문 진행 보기</button>
+      <button type="button" class="btn" id="draft-reset">되돌리기</button>
+      <button type="button" class="btn" id="draft-save">목표 저장</button>
+      <button type="button" class="btn primary" id="open-plan">주문 계획 보기</button>
+    </div>
+  </div>
+</footer>
+
+<dialog id="plan-dialog" aria-labelledby="plan-title">
+  <div class="dialog-head">
+    <h2 id="plan-title">주문 계획</h2>
+    <button type="button" class="btn ghost small" id="plan-close">닫기</button>
+  </div>
+  <div class="dialog-body" id="plan-body"></div>
+  <div class="dialog-foot" id="plan-foot"></div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

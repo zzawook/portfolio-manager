@@ -13,3 +13,6 @@ state.mock.json
 # Local overrides
 .env
 config.local.yaml
+
+# Backups the web screen keeps each time it saves portfolio.yaml
+history/

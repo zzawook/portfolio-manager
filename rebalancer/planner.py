@@ -7,6 +7,9 @@ Two modes:
   a holding is overweight by `drift_threshold_pp` or more, once a year in
   `annual_rebalance_month`, or on request. Skipped while the portfolio is smaller
   than `min_value_for_rebalance`, where contributions alone fix the weights.
+
+Instruments that stay in the list without a target ("exits") count as a 0% target
+while they are held: never bought, and sold in full at the next rebalance.
 """
 
 from __future__ import annotations
@@ -45,6 +48,9 @@ def build_plan(
 
     r = cfg.rules
     targets = {s: pct / 100 for s, pct in cfg.symbol_targets().items()}
+    held_exits = [s for s in cfg.exit_symbols if snap.positions.get(s, 0) > 0]
+    for sym in held_exits:
+        targets[sym] = 0.0
     warnings: list[str] = []
 
     marks: dict[str, float] = {}
@@ -74,6 +80,12 @@ def build_plan(
     else:
         mode, reason = _choose_mode(cfg, current, targets, invested, today, last_rebalance_year, force_mode)
 
+    if mode != REBALANCE:
+        for sym in held_exits:
+            warnings.append(
+                f"{sym}: 목표에서 뺀 종목이에요. 매도는 리밸런싱 때 해요. 지금 정리하려면 매도 포함 리밸런싱으로 계산하세요."
+            )
+
     cash_available = max(0.0, snap.cash - r.cash_reserve)
     if mode == REBALANCE:
         orders = _rebalance_orders(cfg, snap, targets, marks, values, invested + cash_available, warnings)
@@ -83,9 +95,17 @@ def build_plan(
             cfg, targets, marks, values, snap.quotes, invested + cash_available, cash_available, max_orders, warnings
         )
 
+    for o in orders:
+        share = o.fee / o.notional * 100 if o.notional else 0.0
+        if share >= cfg.fees.warn_pct:
+            warnings.append(
+                f"{o.symbol}: 주문 금액 대비 예상 수수료 비율이 {share:.1f}%예요 (주문 {o.notional:,.2f}, 수수료 약 {o.fee:,.2f}). "
+                "작은 주문은 최소 수수료 때문에 비율이 커져요."
+            )
+
     if mode == CONTRIBUTION and snap.cash < r.monthly_contribution * 0.5:
         warnings.append(
-            f"현금 {snap.cash:,.2f}이 월 적립액 {r.monthly_contribution:,.0f}의 절반보다 적어요. 입금이 됐는지 확인하세요."
+            f"현금({snap.cash:,.2f})이 월 적립액({r.monthly_contribution:,.0f})의 절반보다 적어요. 입금이 됐는지 확인하세요."
         )
 
     projected, projected_cash = _project(targets, marks, values, snap.cash, orders)
@@ -121,7 +141,11 @@ def _choose_mode(
         )
     drift_pp, sym = max(((current[s] - targets[s]) * 100, s) for s in targets)
     if drift_pp >= r.drift_threshold_pp:
-        return REBALANCE, f"{sym}가 목표보다 {drift_pp:.1f}%p 많아요 (기준 {r.drift_threshold_pp:g}%p)."
+        if targets[sym] == 0:
+            return REBALANCE, (
+                f"{sym}: 목표에서 뺐는데 {drift_pp:.1f}%p가 남아 있어요 (기준 {r.drift_threshold_pp:g}%p)."
+            )
+        return REBALANCE, f"{sym}: 목표보다 {drift_pp:.1f}%p 많아요 (기준 {r.drift_threshold_pp:g}%p)."
     if today.month == r.annual_rebalance_month and last_rebalance_year != today.year:
         return REBALANCE, f"{today.year}년 연간 리밸런싱이에요."
     return CONTRIBUTION, "정기 적립이에요. 모자란 종목부터 사요."
@@ -160,6 +184,12 @@ def _buy_orders(
         limit = round_up_cents(ref * (1 + r.limit_buffer_pct / 100))
         budget = min(gap, remaining, r.max_order_value)
         qty = math.floor(budget / limit)
+        fee = 0.0
+        while qty > 0:  # the estimated commission comes out of the same cash
+            fee = cfg.fees.estimate(qty * limit)
+            if qty * limit + fee <= remaining + 1e-9:
+                break
+            qty -= 1
         if qty <= 0:
             continue
         notional = qty * limit
@@ -167,8 +197,8 @@ def _buy_orders(
             continue
         if gap > r.max_order_value and budget == r.max_order_value:
             warnings.append(f"{sym}: 1회 주문 한도 {r.max_order_value:,.0f}에 걸려서 일부만 사요.")
-        orders.append(Order(sym, BUY, qty, limit))
-        remaining -= notional
+        orders.append(Order(sym, BUY, qty, limit, fee))
+        remaining -= notional + fee
     return orders, remaining
 
 
@@ -200,8 +230,9 @@ def _rebalance_orders(
         if excess > r.max_order_value:
             warnings.append(f"{sym}: 1회 주문 한도 {r.max_order_value:,.0f}에 걸려서 일부만 팔아요.")
         limit = round_down_cents(ref * (1 - r.limit_buffer_pct / 100))
-        sells.append(Order(sym, SELL, qty, limit))
-        proceeds += qty * limit
+        fee = cfg.fees.estimate(qty * limit)
+        sells.append(Order(sym, SELL, qty, limit, fee))
+        proceeds += qty * limit - fee
 
     post_values = dict(values)
     for o in sells:
@@ -226,9 +257,8 @@ def _project(
         moved = o.quantity * marks[o.symbol]
         if o.side == BUY:
             v[o.symbol] = v.get(o.symbol, 0.0) + moved
-            c -= o.notional
         else:
             v[o.symbol] = v.get(o.symbol, 0.0) - moved
-            c += o.notional
+        c += o.cash_effect
     total = sum(v.values()) + c
     return {s: v.get(s, 0.0) / total for s in targets}, c

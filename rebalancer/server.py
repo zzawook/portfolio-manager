@@ -1,0 +1,802 @@
+"""Local web screen, served on 127.0.0.1 only.
+
+Security model
+- The server listens on 127.0.0.1. Every request must carry an expected Host
+  header, which blocks DNS-rebinding pages from reading it.
+- Every API call needs the per-run session token embedded in the page, so other
+  websites open in the same browser cannot call the API.
+- The page refuses to be framed, so it cannot be overlaid to trick a click.
+- Orders are sent only by POST /api/orders, which the page calls when the person
+  presses the send button in the plan dialog. The chat has no way to call it.
+"""
+
+from __future__ import annotations
+
+import copy
+import logging
+import secrets
+import socket
+import threading
+import time
+import uuid
+import webbrowser
+from dataclasses import asdict, dataclass, field, replace
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel
+
+from .assistant import Assistant, AssistantBusy
+from .brokers.ibkr import GatewayClient, IbkrBroker, IbkrError, account_id_for, search_contracts
+from .brokers.mock import MockBroker
+from .config import Config, ConfigError, load_config
+from .envfile import load_env_file
+from .execute import safety_problems
+from .jobs import BUY_PLAN_READY, JobError, OrderJob
+from .llm import ChatProvider, make_provider
+from .models import CORE, SATELLITE, AccountSnapshot, Plan
+from .planner import CONTRIBUTION, MODE_LABELS, REBALANCE, REBALANCE_BUYS, PlanError, build_plan
+from .portfolio import Draft, DraftConflict, DraftError, save_portfolio
+from .report import fee_rule, sleeve_weights
+from .state import State, month_key, state_path_for
+
+log = logging.getLogger(__name__)
+
+STATIC = Path(__file__).parent / "static"
+PLAN_TTL_SECONDS = 10 * 60
+HOLDINGS_TTL_SECONDS = 60
+SIDE_LABELS = {"BUY": "매수", "SELL": "매도"}
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, message: str, extra: Optional[dict] = None):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.extra = extra or {}
+
+
+@dataclass
+class PlanRecord:
+    id: str
+    cfg: Config
+    snap: AccountSnapshot
+    plan: Plan
+    problems: list[str]
+    portfolio: dict
+    dirty: bool
+    draft_version: int
+    saved_version: int
+    created_at: float = field(default_factory=time.time)
+    used: bool = False
+
+
+# Views ------------------------------------------------------------------------
+
+
+def plan_view(cfg: Config, plan: Plan, problems: list[str]) -> dict:
+    total = plan.total_value or 1.0
+    weights = [
+        {
+            "symbol": sym,
+            "target": target * 100,
+            "now": plan.current_weights.get(sym, 0.0) * 100,
+            "after": plan.projected_weights.get(sym, 0.0) * 100,
+            "exit": target == 0,
+        }
+        for sym, target in plan.target_weights.items()
+    ]
+    now_sleeves = sleeve_weights(cfg, plan.current_weights)
+    after_sleeves = sleeve_weights(cfg, plan.projected_weights)
+    targets = cfg.sleeve_targets()
+    two_step = plan.mode == REBALANCE and bool(plan.sells)
+    sending = plan.sells if plan.sells else plan.buys
+    buy_total = sum(o.notional for o in plan.buys)
+    sell_total = sum(o.notional for o in plan.sells)
+    traded = buy_total + sell_total
+    leftover = None
+    if plan.mode == CONTRIBUTION and plan.orders and plan.projected_cash > max(cfg.rules.min_order_value, 0.1 * total):
+        leftover = f"남는 현금은 다음 실행 때 모자란 종목을 사는 데 써요 (한 번에 최대 {cfg.rules.max_buy_orders}종목)."
+    contribution = cfg.rules.monthly_contribution
+    return {
+        "mode": plan.mode,
+        "mode_label": MODE_LABELS.get(plan.mode, plan.mode),
+        "reason": plan.reason,
+        "total_value": plan.total_value,
+        "cash": plan.cash,
+        "projected_cash": plan.projected_cash,
+        "cash_now": plan.cash / total * 100,
+        "cash_after": plan.projected_cash / total * 100,
+        "orders": [
+            {
+                "symbol": o.symbol,
+                "side": o.side,
+                "side_label": SIDE_LABELS[o.side],
+                "quantity": o.quantity,
+                "limit_price": o.limit_price,
+                "notional": o.notional,
+                "fee": o.fee,
+                "sent_now": o in sending,
+            }
+            for o in plan.orders
+        ],
+        "buy_total": buy_total,
+        "sell_total": sell_total,
+        "fee_total": plan.fee_total,
+        "fee_share": plan.fee_total / traded * 100 if traded else 0.0,
+        "fee_rule": fee_rule(cfg),
+        "fx": {"amount": contribution, "fee": cfg.fees.fx_estimate(contribution)},
+        "two_step": two_step,
+        "send_count": len(sending),
+        "weights": weights,
+        "sleeves": [
+            {"sleeve": s, "target": targets[s], "now": now_sleeves[s] * 100, "after": after_sleeves[s] * 100}
+            for s in (CORE, SATELLITE)
+        ],
+        "warnings": list(plan.warnings),
+        "problems": list(problems),
+        "leftover_note": leftover,
+    }
+
+
+def holdings_view(cfg: Config, snap: AccountSnapshot, missing_conids: list[str]) -> dict:
+    positions = []
+    invested = 0.0
+    for sym, qty in snap.positions.items():
+        quote = snap.quotes.get(sym)
+        price = quote.mark if quote else None
+        value = qty * price if price else None
+        if value:
+            invested += value
+        positions.append({"symbol": sym, "quantity": qty, "price": price, "value": value})
+    prices = {sym: q.mark for sym, q in snap.quotes.items() if q.mark and sym in cfg.instruments}
+    return {
+        "cash": snap.cash,
+        "invested": invested,
+        "total": invested + snap.cash,
+        "positions": positions,
+        "prices": prices,
+        "unknown": list(snap.unknown_positions),
+        "missing_conids": missing_conids,
+        "unpriced": [p["symbol"] for p in positions if p["value"] is None],
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+# The app ----------------------------------------------------------------------
+
+
+class App:
+    def __init__(
+        self,
+        config_path: str | Path,
+        broker_kind: Optional[str] = None,
+        mock_file: Optional[str] = None,
+        today: Optional[date] = None,
+        provider: Optional[ChatProvider] = None,
+        chat_reason: str = "",
+        gateway: Optional[GatewayClient] = None,
+        question_timeout: Optional[float] = None,
+    ):
+        self.config_path = Path(config_path).resolve()
+        self.saved = load_config(self.config_path)
+        self.kind = broker_kind or self.saved.broker.type
+        if self.kind not in ("mock", "ibkr"):
+            raise ConfigError("broker는 mock 또는 ibkr여야 해요.")
+        self.state_path = state_path_for(self.config_path, self.kind)
+        self.today_override = today
+        self.token = secrets.token_urlsafe(32)
+        self.lock = threading.RLock()
+        self.broker_lock = threading.Lock()
+        self.draft = Draft(self.saved)
+        self.saved_version = 1
+        self.plans: dict[str, PlanRecord] = {}
+        self.job: Optional[OrderJob] = None
+        self.question_timeout = question_timeout
+        self._holdings: Optional[dict] = None
+
+        self.mock: Optional[MockBroker] = None
+        self.gateway: Optional[GatewayClient] = None
+        if self.kind == "mock":
+            path = Path(mock_file) if mock_file else self.saved.resolve_path(self.saved.broker.mock_file)
+            self.mock = MockBroker(path, self.saved)
+            self.mock_label = path.name
+        else:
+            settings = self.saved.broker.ibkr
+            self.gateway = gateway or GatewayClient(settings.base_url, account_id_for(self.saved), settings.verify_ssl)
+
+        self.chat_reason = chat_reason
+        self.provider = provider
+        self.assistant: Optional[Assistant] = None
+        if provider is not None:
+            self.assistant = Assistant(
+                provider,
+                host=self,
+                rules=self.saved.rules,
+                currency=self.saved.base_currency,
+                fee_rule=fee_rule(self.saved),
+            )
+
+    # Basics ------------------------------------------------------------------
+
+    def today(self) -> date:
+        return self.today_override or date.today()
+
+    def broker_info(self) -> dict:
+        if self.kind == "mock":
+            return {"kind": "mock", "label": "모의 계좌", "live": False, "detail": f"예시 파일 {self.mock_label}"}
+        account = self.gateway.account_id if self.gateway else ""
+        paper = account.upper().startswith("D")
+        masked = f"{account[:2]}{'*' * max(0, len(account) - 5)}{account[-3:]}" if len(account) > 5 else account
+        return {
+            "kind": "ibkr",
+            "label": "IBKR 모의계좌" if paper else "IBKR 실계좌",
+            "live": not paper,
+            "detail": f"계좌 {masked}" if account else "계좌번호 없음",
+        }
+
+    def broker_for(self, cfg: Config):
+        if self.kind == "mock":
+            self.mock.reconfigure(cfg)
+            return self.mock
+        try:
+            return IbkrBroker(cfg, client=self.gateway)
+        except IbkrError as e:
+            raise ApiError(400, str(e)) from e
+
+    def _job_active(self) -> bool:
+        return self.job is not None and self.job.active
+
+    def state_view(self) -> dict:
+        state = State(self.state_path)
+        today = self.today()
+        key = month_key(today)
+        done = state.execution(key)
+        with self.lock:
+            return {
+                "today": today.isoformat(),
+                "base_currency": self.saved.base_currency,
+                "broker": self.broker_info(),
+                "rules": asdict(self.saved.rules),
+                "saved": copy.deepcopy(self.draft.saved),
+                "draft": self.draft.view(),
+                "chat": self.chat_view(),
+                "month": {
+                    "key": key,
+                    "executed_at": done["at"] if done else None,
+                    "mode_label": MODE_LABELS.get(done["mode"], done["mode"]) if done else None,
+                },
+                "job": self.job_view(self.job) if self.job else None,
+            }
+
+    def chat_view(self) -> dict:
+        settings = self.saved.assistant
+        return {
+            "enabled": self.assistant is not None,
+            "provider": self.provider.label if self.provider else settings.provider,
+            "model": self.provider.model if self.provider else settings.resolved_model,
+            "reason": self.chat_reason,
+            "busy": bool(self.assistant and self.assistant.busy),
+            "transcript": list(self.assistant.transcript) if self.assistant else [],
+        }
+
+    # Holdings ----------------------------------------------------------------
+
+    def _holdings_cfg(self) -> Config:
+        cfg, _ = self.draft.evaluate()
+        return cfg or self.saved
+
+    def holdings(self, refresh: bool = False) -> dict:
+        with self.lock:
+            cached = self._holdings
+            if cached and not refresh and time.time() - cached["ts"] < HOLDINGS_TTL_SECONDS:
+                return cached["view"]
+            cfg = self._holdings_cfg()
+        missing = [s for s, i in cfg.instruments.items() if not i.conid] if self.kind == "ibkr" else []
+        try:
+            with self.broker_lock:
+                if self.kind == "ibkr":
+                    usable = replace(cfg, instruments={s: i for s, i in cfg.instruments.items() if i.conid})
+                    if not usable.instruments:
+                        raise ApiError(
+                            400,
+                            "conid가 있는 종목이 없어서 잔고를 불러올 수 없어요. 목록에서 종목을 펼쳐 IBKR conid를 찾아 넣고 저장하세요.",
+                            {"missing_conids": missing},
+                        )
+                    snap = IbkrBroker(usable, client=self.gateway).snapshot()
+                else:
+                    snap = self.broker_for(cfg).snapshot()
+        except IbkrError as e:
+            raise ApiError(502, str(e)) from e
+        view = holdings_view(cfg, snap, missing)
+        with self.lock:
+            self._holdings = {"ts": time.time(), "view": view, "snap": snap}
+        return view
+
+    def _is_held(self, symbol: str) -> bool:
+        with self.lock:
+            if not self._holdings:
+                return True  # unknown: keep the instrument so a holding is never orphaned
+            return self._holdings["snap"].positions.get(symbol, 0) > 0
+
+    # Draft -------------------------------------------------------------------
+
+    def _no_chat_running(self) -> None:
+        if self.assistant and self.assistant.busy:
+            raise ApiError(409, "채팅이 초안을 고치는 중이에요. 답이 온 뒤에 다시 해 주세요.")
+
+    def put_draft(self, version: int, portfolio: dict) -> dict:
+        self._no_chat_running()
+        with self.lock:
+            try:
+                self.draft.replace(portfolio, expected_version=version)
+            except DraftConflict as e:
+                raise ApiError(409, str(e), {"draft": self.draft.view()}) from e
+            except DraftError as e:
+                raise ApiError(400, str(e)) from e
+            return self.draft.view()
+
+    def reset_draft(self) -> dict:
+        self._no_chat_running()
+        with self.lock:
+            self.draft.reset(self.saved)
+            return self.draft.view()
+
+    def save_draft(self) -> dict:
+        self._no_chat_running()
+        with self.lock:
+            self._save_draft_locked(self.draft.portfolio)
+            return self.state_view()
+
+    def _save_draft_locked(self, portfolio: dict) -> None:
+        try:
+            self.saved = save_portfolio(self.saved, portfolio)
+        except ConfigError as e:
+            raise ApiError(400, "저장할 수 없어요.", {"problems": str(e).split("\n")}) from e
+        self.saved_version += 1
+        self.draft.reset(self.saved)
+
+    # Plans and orders --------------------------------------------------------
+
+    def _compute_plan(self, force_rebalance: bool) -> PlanRecord:
+        with self.lock:
+            cfg, problems = self.draft.evaluate()
+            if cfg is None or problems:
+                raise ApiError(400, "초안에 고칠 점이 있어서 계획을 계산할 수 없어요.", {"problems": problems})
+            portfolio = copy.deepcopy(self.draft.portfolio)
+            dirty = self.draft.dirty
+            draft_version = self.draft.version
+            saved_version = self.saved_version
+        try:
+            with self.broker_lock:
+                snap = self.broker_for(cfg).snapshot()
+            state = State(self.state_path)
+            plan = build_plan(cfg, snap, self.today(), state.last_rebalance_year, REBALANCE if force_rebalance else None)
+        except IbkrError as e:
+            raise ApiError(502, str(e)) from e
+        except PlanError as e:
+            raise ApiError(400, str(e)) from e
+        return PlanRecord(
+            id=uuid.uuid4().hex,
+            cfg=cfg,
+            snap=snap,
+            plan=plan,
+            problems=safety_problems(cfg, plan, snap),
+            portfolio=portfolio,
+            dirty=dirty,
+            draft_version=draft_version,
+            saved_version=saved_version,
+        )
+
+    def make_plan(self, force_rebalance: bool = False) -> dict:
+        if self._job_active():
+            raise ApiError(409, "진행 중인 주문이 있어요. 먼저 그 주문을 끝내 주세요.")
+        rec = self._compute_plan(force_rebalance)
+        with self.lock:
+            self.plans = {k: v for k, v in self.plans.items() if time.time() - v.created_at < PLAN_TTL_SECONDS}
+            self.plans[rec.id] = rec
+        state = State(self.state_path)
+        key = month_key(self.today())
+        done = state.execution(key)
+        return {
+            "id": rec.id,
+            **plan_view(rec.cfg, rec.plan, rec.problems),
+            "dirty": rec.dirty,
+            "force_rebalance": force_rebalance,
+            "broker": self.broker_info(),
+            "month": {"key": key, "executed_at": done["at"] if done else None},
+        }
+
+    def start_orders(self, plan_id: str, allow_repeat: bool = False) -> dict:
+        with self.lock:
+            if self._job_active():
+                raise ApiError(409, "진행 중인 주문이 있어요. 먼저 그 주문을 끝내 주세요.")
+            rec = self.plans.get(plan_id)
+            if rec is None:
+                raise ApiError(410, "이 계획은 더 이상 쓸 수 없어요. 계획을 다시 계산해 주세요.")
+            if time.time() - rec.created_at > PLAN_TTL_SECONDS:
+                raise ApiError(410, "계획을 만든 지 10분이 넘었어요. 시세가 바뀌었을 수 있으니 다시 계산해 주세요.")
+            if rec.used:
+                raise ApiError(409, "이미 보낸 계획이에요. 새로 계산해 주세요.")
+            if rec.saved_version != self.saved_version or (rec.dirty and rec.draft_version != self.draft.version):
+                raise ApiError(409, "계획을 만든 뒤 목표가 바뀌었어요. 계획을 다시 계산해 주세요.")
+            if rec.problems:
+                raise ApiError(400, "안전 점검에 걸려서 보낼 수 없어요.", {"problems": rec.problems})
+            if not rec.plan.orders:
+                raise ApiError(400, "보낼 주문이 없어요.")
+            today = self.today()
+            key = month_key(today)
+            if State(self.state_path).executed(key) and not allow_repeat:
+                raise ApiError(409, f"{key}에 이미 주문했어요. 다시 보내려면 '이번 달에 한 번 더 보낼게요'를 체크하세요.")
+            if self.assistant and self.assistant.busy:
+                raise ApiError(409, "채팅이 초안을 고치는 중이에요. 답이 온 뒤에 다시 해 주세요.")
+
+            cfg = rec.cfg
+            if rec.dirty:
+                self._save_draft_locked(rec.portfolio)
+                cfg = self.saved
+            rec.used = True
+            kwargs = {"question_timeout": self.question_timeout} if self.question_timeout else {}
+            job = OrderJob(cfg, self.broker_for(cfg), self.state_path, today, rec.plan, **kwargs)
+            self.job = job
+        job.start()
+        return self.job_view(job)
+
+    def job_view(self, job: OrderJob) -> dict:
+        view = job.to_dict()
+        if job.status == BUY_PLAN_READY and job.buy_plan is not None:
+            view["buy_plan"] = plan_view(job.cfg, job.buy_plan, job.buy_problems)
+        else:
+            view["buy_plan"] = None
+        return view
+
+    def _get_job(self, job_id: str) -> OrderJob:
+        with self.lock:
+            if self.job is None or self.job.id != job_id:
+                raise ApiError(404, "주문 작업을 찾을 수 없어요.")
+            return self.job
+
+    def answer(self, job_id: str, question_id: str, approve: bool) -> dict:
+        job = self._get_job(job_id)
+        try:
+            job.answer(question_id, approve)
+        except JobError as e:
+            raise ApiError(409, str(e)) from e
+        time.sleep(0.05)  # let the worker pick the answer up so the reply shows it
+        return self.job_view(job)
+
+    def buy_plan(self, job_id: str) -> dict:
+        job = self._get_job(job_id)
+        try:
+            with self.broker_lock:
+                broker = self.broker_for(job.cfg) if self.kind == "mock" else job.broker
+                snap = broker.snapshot()
+            state = State(self.state_path)
+            plan = build_plan(job.cfg, snap, self.today(), state.last_rebalance_year, REBALANCE_BUYS)
+            job.set_buy_plan(plan, snap, safety_problems(job.cfg, plan, snap))
+        except IbkrError as e:
+            raise ApiError(502, str(e)) from e
+        except (PlanError, JobError) as e:
+            raise ApiError(409, str(e)) from e
+        return self.job_view(job)
+
+    def send_buys(self, job_id: str) -> dict:
+        job = self._get_job(job_id)
+        try:
+            job.send_buys()
+        except JobError as e:
+            raise ApiError(409, str(e)) from e
+        return self.job_view(job)
+
+    def finish_job(self, job_id: str) -> dict:
+        job = self._get_job(job_id)
+        try:
+            job.finish()
+        except JobError as e:
+            raise ApiError(409, str(e)) from e
+        return self.job_view(job)
+
+    # Contracts ---------------------------------------------------------------
+
+    def find_contracts(self, symbol: str, exchange: str = "LSE") -> list[dict]:
+        if self.kind != "ibkr" or self.gateway is None:
+            raise ApiError(
+                400, "모의 계좌로 실행 중이라 IBKR에서 찾을 수 없어요. IBKR로 실행한 뒤 화면에서 conid를 채우면 돼요."
+            )
+        if not symbol.strip():
+            raise ApiError(400, "찾을 티커를 넣어 주세요.")
+        try:
+            with self.broker_lock:
+                return search_contracts(self.gateway, symbol, self.saved.base_currency, exchange or "LSE")
+        except IbkrError as e:
+            raise ApiError(502, str(e)) from e
+
+    # Chat --------------------------------------------------------------------
+
+    def chat(self, message: str) -> dict:
+        if self.assistant is None:
+            raise ApiError(503, self.chat_reason or "채팅이 꺼져 있어요.")
+        try:
+            result = self.assistant.send(message)
+        except AssistantBusy as e:
+            raise ApiError(409, str(e)) from e
+        except ValueError as e:
+            raise ApiError(400, str(e)) from e
+        with self.lock:
+            draft = self.draft.view()
+        return {**result, "draft": draft, "chat": self.chat_view()}
+
+    def reset_chat(self) -> dict:
+        if self.assistant is not None:
+            try:
+                self.assistant.reset()
+            except AssistantBusy as e:
+                raise ApiError(409, str(e)) from e
+        return self.chat_view()
+
+    # What the assistant can see and do (AssistantHost) ---------------------------
+
+    def draft_overview(self) -> dict:
+        with self.lock:
+            view = self.draft.view()
+            holdings = self._holdings["view"] if self._holdings else None
+        portfolio = view["portfolio"]
+        allocated = {a["symbol"] for a in portfolio["allocations"]}
+        sleeves = {CORE: 0.0, SATELLITE: 0.0}
+        for a in portfolio["allocations"]:
+            sleeves[a["sleeve"]] += a["target"]
+        overview: dict[str, Any] = {
+            "allocations": portfolio["allocations"],
+            "sleeve_targets": sleeves,
+            "sum": round(sum(sleeves.values()), 4),
+            "exits": [i["symbol"] for i in portfolio["instruments"] if i["symbol"] not in allocated],
+            "instruments": portfolio["instruments"],
+            "problems": view["problems"],
+            "unsaved_changes": [c["text"] for c in view["changes"]],
+        }
+        if holdings and holdings["total"] > 0:
+            total = holdings["total"]
+            overview["holdings"] = {
+                "as_of": holdings["fetched_at"],
+                "total_value": round(total, 2),
+                "cash_pct": round(holdings["cash"] / total * 100, 2),
+                "weights_pct": {
+                    p["symbol"]: round(p["value"] / total * 100, 2) for p in holdings["positions"] if p["value"]
+                },
+            }
+        else:
+            overview["holdings"] = "잔고를 아직 불러오지 않았어요."
+        return overview
+
+    def assistant_context(self) -> dict:
+        return {
+            "today": self.today().isoformat(),
+            "broker": self.broker_info()["label"],
+            "portfolio": self.draft_overview(),
+        }
+
+    def set_allocation(self, **kwargs: Any) -> str:
+        with self.lock:
+            return self.draft.set_allocation(**kwargs)
+
+    def remove_allocation(self, sleeve: str, symbol: str) -> str:
+        held = self._is_held(symbol.strip().upper())
+        with self.lock:
+            return self.draft.remove_allocation(sleeve, symbol, held)
+
+    def preview_orders(self, force_rebalance: bool) -> dict:
+        try:
+            rec = self._compute_plan(force_rebalance)
+        except ApiError as e:
+            return {"error": e.message, **e.extra}
+        view = plan_view(rec.cfg, rec.plan, rec.problems)
+        keep = (
+            "mode_label",
+            "reason",
+            "total_value",
+            "cash",
+            "buy_total",
+            "sell_total",
+            "fee_total",
+            "fee_rule",
+            "projected_cash",
+            "two_step",
+        )
+        summary = {k: view[k] for k in keep}
+        order_keys = ("side_label", "symbol", "quantity", "limit_price", "notional", "fee")
+        summary["orders"] = [{k: o[k] for k in order_keys} for o in view["orders"]]
+        summary["warnings"] = view["warnings"]
+        summary["problems"] = view["problems"]
+        summary["note"] = "계산만 했어요. 주문은 사용자가 '주문 계획 보기'에서 직접 보내야 나가요."
+        return summary
+
+
+# HTTP layer -------------------------------------------------------------------
+
+
+class DraftBody(BaseModel):
+    version: int
+    portfolio: dict
+
+
+class PlanBody(BaseModel):
+    force_rebalance: bool = False
+
+
+class OrdersBody(BaseModel):
+    plan_id: str
+    allow_repeat: bool = False
+
+
+class AnswerBody(BaseModel):
+    question_id: str
+    approve: bool
+
+
+class ChatBody(BaseModel):
+    message: str
+
+
+SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    ),
+}
+
+
+def create_app(ctx: App, allowed_hosts: set[str]) -> FastAPI:
+    app = FastAPI(title="portfolio-manager", docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        if request.headers.get("host", "") not in allowed_hosts:
+            return JSONResponse({"detail": "허용되지 않은 주소로 들어왔어요."}, status_code=403)
+        if request.url.path.startswith("/api/"):
+            token = request.headers.get("x-session-token", "")
+            if not secrets.compare_digest(token.encode(), ctx.token.encode()):
+                return JSONResponse({"detail": "세션이 맞지 않아요. 페이지를 새로고침하세요."}, status_code=403)
+        response = await call_next(request)
+        for k, v in SECURITY_HEADERS.items():
+            response.headers[k] = v
+        return response
+
+    @app.exception_handler(ApiError)
+    async def on_api_error(request: Request, exc: ApiError):
+        return JSONResponse({"detail": exc.message, **exc.extra}, status_code=exc.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def on_bad_request(request: Request, exc: RequestValidationError):
+        return JSONResponse({"detail": "요청 형식이 잘못됐어요."}, status_code=422)
+
+    @app.exception_handler(ConfigError)
+    async def on_config_error(request: Request, exc: ConfigError):
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    @app.get("/", response_class=HTMLResponse)
+    def index() -> HTMLResponse:
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("__SESSION_TOKEN__", ctx.token))
+
+    @app.get("/static/{name}")
+    def static(name: str):
+        types = {"app.js": "text/javascript", "app.css": "text/css", "favicon.svg": "image/svg+xml"}
+        if name not in types:
+            return JSONResponse({"detail": "없는 파일이에요."}, status_code=404)
+        return FileResponse(STATIC / name, media_type=types[name])
+
+    @app.get("/api/state")
+    def get_state():
+        return ctx.state_view()
+
+    @app.get("/api/holdings")
+    def get_holdings(refresh: bool = False):
+        return ctx.holdings(refresh)
+
+    @app.put("/api/draft")
+    def put_draft(body: DraftBody):
+        return ctx.put_draft(body.version, body.portfolio)
+
+    @app.post("/api/draft/reset")
+    def reset_draft():
+        return ctx.reset_draft()
+
+    @app.post("/api/draft/save")
+    def save_draft():
+        return ctx.save_draft()
+
+    @app.post("/api/plan")
+    def make_plan(body: PlanBody):
+        return ctx.make_plan(body.force_rebalance)
+
+    @app.post("/api/orders")
+    def start_orders(body: OrdersBody):
+        return ctx.start_orders(body.plan_id, body.allow_repeat)
+
+    @app.get("/api/jobs/current")
+    def current_job():
+        with ctx.lock:
+            job = ctx.job
+        return {"job": ctx.job_view(job) if job else None}
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str):
+        return ctx.job_view(ctx._get_job(job_id))
+
+    @app.post("/api/jobs/{job_id}/answer")
+    def answer(job_id: str, body: AnswerBody):
+        return ctx.answer(job_id, body.question_id, body.approve)
+
+    @app.post("/api/jobs/{job_id}/buy-plan")
+    def buy_plan(job_id: str):
+        return ctx.buy_plan(job_id)
+
+    @app.post("/api/jobs/{job_id}/buys")
+    def send_buys(job_id: str):
+        return ctx.send_buys(job_id)
+
+    @app.post("/api/jobs/{job_id}/finish")
+    def finish(job_id: str):
+        return ctx.finish_job(job_id)
+
+    @app.get("/api/contracts")
+    def contracts(symbol: str, exchange: str = "LSE"):
+        return {"candidates": ctx.find_contracts(symbol, exchange)}
+
+    @app.get("/api/chat")
+    def get_chat():
+        return ctx.chat_view()
+
+    @app.post("/api/chat")
+    def chat(body: ChatBody):
+        return ctx.chat(body.message)
+
+    @app.post("/api/chat/reset")
+    def reset_chat():
+        return ctx.reset_chat()
+
+    return app
+
+
+def _port_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def serve(
+    config_path: str,
+    broker_kind: Optional[str] = None,
+    mock_file: Optional[str] = None,
+    today: Optional[date] = None,
+    port: int = 8765,
+    open_browser: bool = True,
+) -> None:
+    import uvicorn
+
+    if not _port_free(port):
+        raise ConfigError(f"{port}번 포트를 이미 쓰고 있어요. --port로 다른 번호를 주세요.")
+    load_env_file(Path(config_path).resolve().parent / ".env")
+    settings = load_config(config_path).assistant
+    provider, reason = make_provider(settings)
+    ctx = App(config_path, broker_kind, mock_file, today, provider=provider, chat_reason=reason)
+    app = create_app(ctx, {f"127.0.0.1:{port}", f"localhost:{port}"})
+    url = f"http://127.0.0.1:{port}/"
+    print(f"웹 화면: {url}")
+    print(f"브로커: {ctx.broker_info()['label']} ({ctx.broker_info()['detail']})")
+    print(f"채팅: 켜짐 ({provider.label}, {provider.model})" if provider else f"채팅: 꺼짐. {reason}")
+    print("끄려면 Ctrl+C")
+    if open_browser:
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

@@ -29,13 +29,13 @@ def safety_problems(cfg: Config, plan: Plan, snap: AccountSnapshot) -> list[str]
         if o.quantity <= 0:
             problems.append(f"{o.symbol}: 수량이 0 이하예요.")
         if o.notional > cfg.rules.max_order_value + 0.01:
-            problems.append(f"{o.symbol}: 주문 금액 {o.notional:,.2f}가 1회 한도 {cfg.rules.max_order_value:,.0f}를 넘어요.")
+            problems.append(f"{o.symbol}: 주문 금액({o.notional:,.2f})이 1회 한도({cfg.rules.max_order_value:,.0f})를 넘어요.")
         if o.side == SELL and o.quantity > snap.positions.get(o.symbol, 0):
             problems.append(f"{o.symbol}: 보유 수량보다 많이 팔려고 해요.")
-    buy_total = sum(o.notional for o in plan.buys)
-    sell_total = sum(o.notional for o in plan.sells)
-    if buy_total > snap.cash + sell_total + 0.01:
-        problems.append(f"매수 합계 {buy_total:,.2f}가 쓸 수 있는 현금보다 많아요.")
+    buy_cost = sum(o.notional + o.fee for o in plan.buys)
+    sell_net = sum(o.notional - o.fee for o in plan.sells)
+    if buy_cost > snap.cash + sell_net + 0.01:
+        problems.append(f"매수 합계({buy_cost:,.2f}, 예상 수수료 포함)가 쓸 수 있는 현금보다 많아요.")
     return problems
 
 
@@ -53,13 +53,22 @@ def _confirm_warning(input_fn: InputFn, out: OutFn) -> Callable[[list[str]], boo
     return confirm
 
 
+def order_stamp() -> str:
+    return datetime.now().strftime("%d%H%M%S")
+
+
+def client_order_id(key: str, stamp: str, index: int) -> str:
+    """A unique id per order (IBKR rejects a reused cOID): month + run time + position."""
+    return f"rb{key.replace('-', '')}{stamp}{index:02d}"
+
+
 def _place(
     broker: Broker, orders: list[Order], key: str, input_fn: InputFn, out: OutFn, start: int = 0
 ) -> list[dict]:
     results = []
-    stamp = datetime.now().strftime("%d%H%M%S")
+    stamp = order_stamp()
     for i, o in enumerate(orders, start=start):
-        coid = f"rb{key.replace('-', '')}{stamp}{i:02d}"
+        coid = client_order_id(key, stamp, i)
         res = broker.place_order(o, coid, _confirm_warning(input_fn, out))
         out(
             f"  {o.side} {o.symbol} {o.quantity}주 @ {o.limit_price:,.2f}: "

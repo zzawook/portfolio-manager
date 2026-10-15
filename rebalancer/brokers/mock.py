@@ -1,4 +1,6 @@
-"""File-backed broker for dry runs and practice. Orders fill instantly at the limit price, in memory only."""
+"""File-backed broker for dry runs and practice. Orders fill instantly at the limit price, in memory only.
+
+The estimated commission is charged on each fill, so practice runs show the cash that would really be left."""
 
 from __future__ import annotations
 
@@ -25,17 +27,20 @@ class MockBroker:
         self.allow = cfg.allowlist
         self.submitted: list[tuple[str, Order]] = []
 
+    def reconfigure(self, cfg: Config) -> None:
+        """Follow a changed instrument list without losing the practice fills made so far."""
+        self.allow = cfg.allowlist
+
     def snapshot(self) -> AccountSnapshot:
         known = {s: q for s, q in self.positions.items() if s in self.allow and q}
         unknown = [s for s, q in self.positions.items() if s not in self.allow and q]
         return AccountSnapshot(cash=self.cash, positions=known, quotes=dict(self.quotes), unknown_positions=unknown)
 
     def place_order(self, order: Order, client_order_id: str, confirm: ConfirmFn) -> dict:
+        self.cash += order.cash_effect  # the estimated fee is charged as if it were the real one
         if order.side == BUY:
-            self.cash -= order.notional
             self.positions[order.symbol] = self.positions.get(order.symbol, 0) + order.quantity
         else:
-            self.cash += order.notional
             self.positions[order.symbol] = self.positions.get(order.symbol, 0) - order.quantity
         self.submitted.append((client_order_id, order))
         return {"status": "submitted", "order_id": f"MOCK-{len(self.submitted)}", "detail": "모의 체결"}

@@ -59,10 +59,18 @@ class Order:
     side: str
     quantity: int
     limit_price: float
+    fee: float = 0.0  # estimated commission
 
     @property
     def notional(self) -> float:
         return round(self.quantity * self.limit_price, 2)
+
+    @property
+    def cash_effect(self) -> float:
+        """Cash after the fill, fee included: negative for a buy, positive for a sell."""
+        if self.side == BUY:
+            return -(self.notional + self.fee)
+        return self.notional - self.fee
 
 
 @dataclass
@@ -93,6 +101,10 @@ class Plan:
     @property
     def sells(self) -> list[Order]:
         return [o for o in self.orders if o.side == SELL]
+
+    @property
+    def fee_total(self) -> float:
+        return round(sum(o.fee for o in self.orders), 2)
 
 
 def round_up_cents(x: float) -> float:

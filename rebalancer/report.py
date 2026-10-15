@@ -8,6 +8,18 @@ SLEEVE_LABELS = {"core": "코어", "satellite": "위성"}
 SIDE_LABELS = {"BUY": "매수", "SELL": "매도"}
 
 
+def fee_rule(cfg: Config) -> str:
+    f = cfg.fees
+    text = f"거래 금액의 {f.rate_pct:g}%, 주문당 최소 {f.min_per_order:,.2f}"
+    if f.max_per_order > 0:
+        text += f", 최대 {f.max_per_order:,.2f}"
+    if f.gst_pct > 0:
+        text += f", 수수료에 GST {f.gst_pct:g}%"
+    if f.extra_per_order > 0:
+        text += f", 거래소와 청산 수수료 {f.extra_per_order:,.2f}"
+    return text
+
+
 def _pct(x: float) -> str:
     return f"{x * 100:6.1f}%"
 
@@ -57,12 +69,17 @@ def format_plan(cfg: Config, snap: AccountSnapshot, plan: Plan) -> str:
         for o in plan.orders:
             lines.append(
                 f"  {SIDE_LABELS[o.side]} {o.symbol:<6}{o.quantity:>6}주 @ {o.limit_price:>9,.2f} = {o.notional:>11,.2f} {ccy}"
+                f"  (수수료 약 {o.fee:,.2f})"
             )
         buy_total = sum(o.notional for o in plan.orders if o.side == BUY)
         sell_total = sum(o.notional for o in plan.orders if o.side != BUY)
+        traded = buy_total + sell_total
+        fee_share = plan.fee_total / traded * 100 if traded else 0.0
         lines.append(
             f"매수 합계 {buy_total:,.2f} / 매도 합계 {sell_total:,.2f} / 실행 후 현금 약 {plan.projected_cash:,.2f} {ccy}"
         )
+        lines.append(f"예상 수수료 합계 {plan.fee_total:,.2f} {ccy} (주문 금액의 {fee_share:.2f}%)")
+        lines.append(f"  수수료 기준: {fee_rule(cfg)}. 실제 금액은 IBKR 체결 내역에서 확인하세요.")
         if plan.mode == CONTRIBUTION and plan.projected_cash > max(cfg.rules.min_order_value, 0.1 * plan.total_value):
             lines.append(
                 f"남는 현금은 다음 실행 때 모자란 종목을 사는 데 써요 (한 번에 최대 {cfg.rules.max_buy_orders}종목)."
@@ -93,8 +110,11 @@ def format_check(cfg: Config) -> str:
         lines.append(f"  {a.symbol} {a.target_pct:g}% {a.label}")
         lines.append(f"    이유: {a.thesis}")
         lines.append(f"    틀렸다고 볼 조건: {a.invalidation}")
+    if cfg.exit_symbols:
+        lines.append("")
+        lines.append(f"정리 대상: {', '.join(cfg.exit_symbols)} (목표에서 뺀 종목이에요. 보유 중이면 리밸런싱 때 팔아요.)")
     missing = [s for s, i in cfg.instruments.items() if not i.conid]
     if missing:
         lines.append("")
-        lines.append(f"IBKR로 실행하려면 conid를 채워야 해요: {', '.join(missing)} (resolve 명령으로 찾을 수 있어요)")
+        lines.append(f"IBKR로 실행하려면 conid를 채워야 해요: {', '.join(missing)} (웹 화면의 'IBKR에서 conid 찾기'나 resolve 명령으로 찾을 수 있어요)")
     return "\n".join(lines)

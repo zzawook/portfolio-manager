@@ -175,7 +175,7 @@ class IbkrBroker:
         missing = [s for s, inst in cfg.instruments.items() if not inst.conid]
         if missing:
             raise IbkrError(
-                f"conid가 없는 종목이 있어요: {', '.join(missing)}. resolve 명령으로 찾아서 config.yaml에 채워 주세요."
+                f"conid가 없는 종목이 있어요: {', '.join(missing)}. 웹 화면의 'IBKR에서 conid 찾기'나 resolve 명령으로 찾아서 portfolio.yaml에 채워 주세요."
             )
         self.cfg = cfg
         self.client = client or GatewayClient(settings.base_url, account_id, settings.verify_ssl)
@@ -190,7 +190,7 @@ class IbkrBroker:
             raise IbkrError("Gateway 세션이 인증되지 않았어요. 브라우저에서 https://localhost:5000 에 로그인하세요.")
         accounts = self.client.iserver_accounts().get("accounts", [])
         if self.client.account_id not in accounts:
-            raise IbkrError(f"계좌 {self.client.account_id}를 찾을 수 없어요. 이 세션에서 보이는 계좌: {accounts}")
+            raise IbkrError(f"계좌({self.client.account_id})를 찾을 수 없어요. 이 세션에서 보이는 계좌: {accounts}")
         self.client.portfolio_accounts()
         self._ready = True
 
@@ -261,26 +261,53 @@ class IbkrBroker:
         return {"status": "rejected", "detail": "주문 확인 메시지가 너무 많이 반복돼서 멈췄어요."}
 
 
-def resolve_candidates(cfg: Config, client: GatewayClient) -> list[str]:
-    """List IBKR contracts for each configured symbol so the person can pick the LSE USD line."""
+def _require_session(client: GatewayClient) -> None:
     status = client.auth_status()
     if not (status.get("authenticated") and status.get("connected")):
         raise IbkrError("Gateway 세션이 인증되지 않았어요. 브라우저에서 https://localhost:5000 에 로그인하세요.")
+
+
+def find_contracts(client: GatewayClient, symbol: str, currency: str, exchange: str = "LSE") -> list[dict]:
+    """IBKR contracts for a ticker. `recommended` marks the listing on the wanted exchange and currency."""
+    sym = symbol.strip().upper()
+    data = client.search_stock(sym)
+    entries = data.get(sym) or data.get(sym.lower()) or []
+    found: list[dict] = []
+    for entry in entries:
+        for contract in entry.get("contracts", []):
+            conid = contract.get("conid")
+            if not conid:
+                continue
+            listing = str(contract.get("exchange", "?"))
+            info = client.contract_info(conid)
+            ccy = str(info.get("currency", "?")).upper()
+            found.append(
+                {
+                    "conid": int(conid),
+                    "exchange": listing,
+                    "currency": ccy,
+                    "name": str(entry.get("name", "")),
+                    "recommended": exchange.upper() in listing.upper() and ccy == currency.upper(),
+                }
+            )
+    return found
+
+
+def resolve_candidates(cfg: Config, client: GatewayClient) -> list[str]:
+    """List IBKR contracts for each configured symbol so the person can pick the LSE USD line."""
+    _require_session(client)
     lines: list[str] = []
     for sym, inst in cfg.instruments.items():
         lines.append(f"{sym} ({inst.name})")
-        data = client.search_stock(sym)
-        entries = data.get(sym) or data.get(sym.upper()) or []
-        found = False
-        for entry in entries:
-            for contract in entry.get("contracts", []):
-                conid = contract.get("conid")
-                exchange = str(contract.get("exchange", "?"))
-                info = client.contract_info(conid) if conid else {}
-                currency = str(info.get("currency", "?")).upper()
-                hint = "  <- 후보" if "LSE" in exchange.upper() and currency == inst.currency else ""
-                lines.append(f"  conid={conid} exchange={exchange} currency={currency} name={entry.get('name', '')}{hint}")
-                found = True
-        if not found:
+        candidates = find_contracts(client, sym, inst.currency, inst.exchange)
+        for c in candidates:
+            hint = "  <- 후보" if c["recommended"] else ""
+            lines.append(f"  conid={c['conid']} exchange={c['exchange']} currency={c['currency']} name={c['name']}{hint}")
+        if not candidates:
             lines.append("  검색 결과가 없어요. IBKR 웹/앱에서 종목을 검색해 conid를 확인하세요.")
     return lines
+
+
+def search_contracts(client: GatewayClient, symbol: str, currency: str, exchange: str = "LSE") -> list[dict]:
+    _require_session(client)
+    return find_contracts(client, symbol, currency, exchange)

@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def project_copy(tmp_path: Path) -> Path:
     shutil.copy(ROOT / "config.yaml", tmp_path / "config.yaml")
+    shutil.copy(ROOT / "portfolio.yaml", tmp_path / "portfolio.yaml")
     shutil.copytree(ROOT / "examples", tmp_path / "examples")
     return tmp_path / "config.yaml"
 
@@ -30,6 +31,7 @@ def test_mock_execute_uses_separate_state_file(tmp_path, monkeypatch):
 
 def test_bad_config_returns_error_code(tmp_path, capsys):
     cfg = project_copy(tmp_path)
-    cfg.write_text(cfg.read_text(encoding="utf-8").replace("target: 40", "target: 41"), encoding="utf-8")
+    portfolio = tmp_path / "portfolio.yaml"
+    portfolio.write_text(portfolio.read_text(encoding="utf-8").replace("target: 40", "target: 41"), encoding="utf-8")
     assert main(["-c", str(cfg), "check"]) == 1
     assert "100%" in capsys.readouterr().err

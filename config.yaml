@@ -1,7 +1,8 @@
-# 포트폴리오 목표 비중 설정 (2026-10-16 확정안)
-# 코어 65% (예측 없이 유지) + 위성 35% (매크로 판단)
+# 리밸런서 설정 (2026-10-16 확정안)
+# 목표 비중과 종목은 portfolio.yaml에 있어요. 웹 화면에서 고치면 그 파일이 바뀌어요.
 
 base_currency: USD
+portfolio_file: portfolio.yaml
 
 broker:
   type: mock                       # mock: 예시 파일로 드라이런 / ibkr: 실제 계좌
@@ -23,41 +24,31 @@ rules:
   limit_buffer_pct: 0.3            # 지정가 = 매도호가 × (1 + 0.3%), 매도는 반대
   max_satellite_idea_pct: 15       # 위성 아이디어 하나의 최대 비중
 
-# conid는 IBKR 종목 번호예요. `python -m rebalancer resolve`로 찾아서 채우세요.
-instruments:
-  VWRA: {name: Vanguard FTSE All-World UCITS ETF (USD) Acc, exchange: LSE, currency: USD, conid: null}
-  AGGU: {name: iShares Core Global Aggregate Bond UCITS ETF USD Hedged (Acc), exchange: LSE, currency: USD, conid: null}
-  IGLN: {name: iShares Physical Gold ETC (USD), exchange: LSE, currency: USD, conid: null}
-  SMH:  {name: VanEck Semiconductor UCITS ETF (USD), exchange: LSE, currency: USD, conid: null}
-  ZAPP: {name: Global X U.S. Electrification UCITS ETF (USD Acc), exchange: LSE, currency: USD, conid: null}
-  WDGF: {name: WisdomTree Global Defence UCITS ETF (USD Acc), exchange: LSE, currency: USD, conid: null}
+# 예상 수수료 (주문 계획에 표시하고, 매수 수량을 정할 때 현금에서 미리 빼요)
+# 기본값은 IBKR Pro Fixed, 런던거래소(LSE) 달러 거래 기준이에요 (2026-10 IBKR 싱가포르 공식 표).
+# Tiered를 쓰면 아래 세 줄을 바꾸세요: min_per_order 1.70, max_per_order 39, extra_per_order 0.21
+# (Tiered는 주문 금액 약 7,000불까지 Fixed보다 싸요. IBKR 설정에서 요금제를 바꿀 수 있어요.)
+fees:
+  rate_pct: 0.05                   # 거래 금액의 0.05%
+  min_per_order: 4.00              # 주문당 최소
+  max_per_order: 0                 # 주문당 최대 (0이면 상한 없음)
+  extra_per_order: 0               # 거래소와 청산 수수료 (Tiered일 때만)
+  gst_pct: 9                       # 싱가포르 거주자는 수수료에 GST 9%가 붙어요
+  warn_pct: 1.0                    # 수수료가 주문 금액의 이 비율(%) 이상이면 경고
+  fx_rate_bp: 0.2                  # SGD를 USD로 바꿀 때 IBKR 환전 수수료 (0.2bp, 최소 2불)
+  fx_min: 2.0
 
-allocations:
-  core:
-    - {symbol: VWRA, target: 40, label: 전세계 주식}
-    - {symbol: AGGU, target: 15, label: 글로벌 채권 (달러 헤지)}
-    - {symbol: IGLN, target: 10, label: 금}
-
-  # 위성은 thesis(이유)와 invalidation(틀렸다고 볼 조건)이 없으면 실행되지 않아요.
-  # 아래 문구는 예시예요. 본인 판단으로 고쳐 쓰세요.
-  satellite:
-    - symbol: SMH
-      target: 15
-      label: AI 반도체
-      thesis: AI 설비투자가 이어지면서 반도체 수요가 늘어난다
-      invalidation: 빅테크 AI 설비투자 가이던스가 두 분기 연속 줄어든다
-    - symbol: ZAPP
-      target: 5
-      label: 전력 인프라
-      thesis: AI 데이터센터 확대로 미국 전력망 투자가 늘어난다
-      invalidation: 데이터센터 투자 축소로 미국 전력 수요 전망이 낮아진다
-    - symbol: WDGF
-      target: 10
-      label: 글로벌 방산
-      thesis: 유럽 안보 위기로 각국 방산 지출이 늘어난다
-      invalidation: 휴전 또는 유럽 국방비 증액 계획 축소
-    - symbol: IGLN
-      target: 5
-      label: 금 (위성)
-      thesis: 전쟁 등 위기에 대비한 장기 보유
-      invalidation: 위기 신호 없이 실질금리가 계속 오른다
+# 웹 화면의 채팅 설정. 키는 이 파일에 적지 말고 환경 변수나 .env 파일에 넣으세요 (.env는 git에 안 올라가요).
+#   anthropic          Claude. 키: ANTHROPIC_API_KEY. 기본 모델 claude-sonnet-5-5
+#   openai             OpenAI (Responses API). 키: OPENAI_API_KEY. 기본 모델 gpt-6.1-sol
+#   openai-compatible  OpenAI 호환 서버. base_url과 model을 꼭 적어요. 키 변수 이름은 api_key_env에.
+#                      Gemini   base_url: https://generativelanguage.googleapis.com/v1beta/openai  api_key_env: GEMINI_API_KEY
+#                      OpenRouter base_url: https://openrouter.ai/api/v1  api_key_env: OPENROUTER_API_KEY
+#                      Ollama(내 컴퓨터) base_url: http://localhost:11434/v1  (키 없음)
+assistant:
+  provider: anthropic
+  model: ""                        # 비워 두면 위의 기본 모델. 예: claude-opus-5-5 (더 깊게, 비용 약 2배)
+  api_key_env: ""                  # 비워 두면 위의 기본 변수 이름
+  base_url: ""
+  max_tokens: 4096
+  reasoning_effort: ""             # openai만: none, low, medium, high
