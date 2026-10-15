@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Personal run history (executions, journal). Keep it out of git.
+state.json
+state.mock.json
+*.tmp
+
+# Local overrides
+.env
+config.local.yaml

@@ -1,0 +1,11 @@
+# 첫 달 예시: 아무것도 없고 현금 3,000불만 있는 상태
+# 가격은 계산을 보여 주기 위한 예시예요. 실제 시세가 아니에요.
+cash: 3000
+positions: {}
+quotes:
+  VWRA: {bid: 189.90, ask: 190.10, last: 190.00}
+  AGGU: {bid: 5.84, ask: 5.86, last: 5.85}
+  IGLN: {bid: 94.90, ask: 95.10, last: 95.00}
+  SMH:  {bid: 64.90, ask: 65.10, last: 65.00}
+  ZAPP: {bid: 25.90, ask: 26.10, last: 26.00}
+  WDGF: {bid: 11.45, ask: 11.55, last: 11.50}

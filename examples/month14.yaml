@@ -1,0 +1,17 @@
+# 1년쯤 지난 예시: SMH가 많이 올라서 목표보다 5%p 넘게 커진 상태 + 이번 달 입금 3,000불
+# 가격은 계산을 보여 주기 위한 예시예요. 실제 시세가 아니에요.
+cash: 3000
+positions:
+  VWRA: 76
+  AGGU: 1000
+  IGLN: 60
+  SMH: 134
+  ZAPP: 70
+  WDGF: 320
+quotes:
+  VWRA: {bid: 189.90, ask: 190.10, last: 190.00}
+  AGGU: {bid: 5.84, ask: 5.86, last: 5.85}
+  IGLN: {bid: 94.90, ask: 95.10, last: 95.00}
+  SMH:  {bid: 64.90, ask: 65.10, last: 65.00}
+  ZAPP: {bid: 25.90, ask: 26.10, last: 26.00}
+  WDGF: {bid: 11.45, ask: 11.55, last: 11.50}
