@@ -323,3 +323,15 @@ def test_login_callback_and_chat_over_http(tmp_path):
 
     bad = bare.get("/auth/callback", params={"code": "c", "state": "forged"})
     assert bad.status_code == 400 and "로그인" in bad.text
+
+
+def test_plan_reply_read_from_streamed_items_when_final_output_is_empty(tmp_path):
+    auth, _, _ = sign_in(tmp_path)
+    item = {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "안녕하세요"}]}
+    events = sse(
+        {"type": "response.output_item.done", "item": item},
+        {"type": "response.completed", "response": {"status": "completed", "output": []}},
+    )
+    provider = ChatGPTPlanProvider(auth, "m", session=FakeApiSession(FakeResp(lines=events)))
+    reply = provider.complete("s", [{"role": "user", "text": "x"}], TOOLS)
+    assert reply.text == "안녕하세요"

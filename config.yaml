@@ -53,7 +53,7 @@ fees:                              # IBKR Pro Tiered, LSE 달러 거래 기준 (
 #                      Ollama(내 컴퓨터) base_url: http://localhost:11434/v1  (키 없음)
 assistant:
   provider: chatgpt
-  model: ""                        # 비워 두면 위의 기본 모델
+  model: gpt-6-astra                      # 비워 두면 위의 기본 모델
   api_key_env: ""                  # 비워 두면 위의 기본 변수 이름
   base_url: ""
   max_tokens: 4096                 # chatgpt에서는 보내지 않아요 (플랜 경로가 이 값을 받지 않아요)

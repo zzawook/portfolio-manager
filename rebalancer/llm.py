@@ -502,9 +502,12 @@ class ChatGPTPlanProvider:
                     raise ProviderError(PLAN_ERRORS["subscription_sharing_usage_limit_exceeded"])
                 raise ProviderError(f"ChatGPT 요청이 실패했어요 (HTTP {resp.status_code}). {detail[:200]}".strip())
             final = None
+            streamed: list[dict] = []  # some models send the output only as items, not in the final event
             for event in _sse_events(resp):
                 kind = event.get("type")
-                if kind in ("response.completed", "response.incomplete"):
+                if kind == "response.output_item.done" and isinstance(event.get("item"), dict):
+                    streamed.append(event["item"])
+                elif kind in ("response.completed", "response.incomplete"):
                     final = event.get("response") or {}
                 elif kind == "response.failed":
                     error = (event.get("response") or {}).get("error") or {}
@@ -519,7 +522,7 @@ class ChatGPTPlanProvider:
                 close()
         if final is None:
             raise ProviderError("ChatGPT 답이 중간에 끊겼어요. 다시 보내 주세요.")
-        output = final.get("output") or []
+        output = final.get("output") or streamed
         calls: list[ToolCall] = []
         texts: list[str] = []
         for item in output:
