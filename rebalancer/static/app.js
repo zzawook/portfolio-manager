@@ -717,6 +717,84 @@ function renderHeader() {
   else asOf.textContent = "";
 }
 
+// Order history -----------------------------------------------------------------------
+
+const OUTCOME_LABEL = {
+  filled: "체결됨",
+  partial: "일부 체결, 나머지 대기",
+  working: "체결 대기",
+  ended: "체결 안 되고 끝남",
+  rejected: "거부됨",
+  unknown: "확인 중",
+};
+
+function whenLabel(iso) {
+  return iso ? `${dayLabel(iso)} ${clock(iso)}` : "";
+}
+
+async function openHistory() {
+  const d = $("#history-dialog");
+  const body = $("#history-body");
+  body.replaceChildren(el("p", { class: "hint", text: "IBKR에서 체결 결과를 불러오는 중이에요." }));
+  if (!d.open) d.showModal();
+  let data;
+  try {
+    data = await api("GET", "/api/orders/history");
+  } catch (err) {
+    body.replaceChildren(el("p", { class: "notice", text: err.message }));
+    return;
+  }
+  body.replaceChildren();
+  if (data.note) body.append(el("div", { class: "callout" }, icon("warn", "warning"), el("p", { text: data.note })));
+  if (!data.runs.length) {
+    body.append(el("p", { text: "아직 보낸 주문이 없어요." }));
+    return;
+  }
+  for (const run of data.runs) {
+    body.append(el("h3", { class: "history-run", text: `${whenLabel(run.at)} (${run.mode_label})` }));
+    const table = el("table", { class: "orders history" });
+    table.append(
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          el("th", { text: "구분" }),
+          el("th", { text: "종목" }),
+          el("th", { class: "r", text: "수량" }),
+          el("th", { class: "r", text: "지정가" }),
+          el("th", { text: "결과" }),
+          el("th", { class: "r", text: "체결" }),
+          el("th", { class: "r fee-col", text: "수수료" }),
+        ),
+      ),
+    );
+    const tbody = el("tbody");
+    for (const o of run.orders) {
+      const filled = o.filled > 0 ? `${plain(o.filled)}주 @ ${usd(o.avg_price, 2)}` : "-";
+      const result = el("td", {}, el("span", { class: `outcome outcome-${o.outcome}`, text: OUTCOME_LABEL[o.outcome] || o.outcome }));
+      if (o.outcome === "rejected" && o.detail) result.append(el("small", { class: "outcome-detail", text: o.detail }));
+      tbody.append(
+        el(
+          "tr",
+          {},
+          el("td", { text: o.side_label }),
+          el("td", { text: o.symbol }),
+          el("td", { class: "r num", text: plain(o.quantity) }),
+          el("td", { class: "r num", text: o.limit ? usd(o.limit, 2) : "-" }),
+          result,
+          el("td", { class: "r num", text: filled }),
+          el("td", { class: "r num fee-col", text: o.commission != null ? usd(o.commission, 2) : "-" }),
+        ),
+      );
+    }
+    table.append(tbody);
+    body.append(el("div", { class: "table-wrap" }, table));
+  }
+  body.append(el("p", { class: "fine", text: "당일 주문은 그날 장이 끝날 때까지 체결되지 않으면 IBKR이 취소해요. 수수료는 IBKR이 실제로 매긴 금액이에요." }));
+}
+
 // IBKR login status -------------------------------------------------------------------
 
 let ibkrTimer = null;
@@ -2147,6 +2225,8 @@ function bind() {
       sendChat(e.target.value);
     }
   });
+  $("#history-open").addEventListener("click", () => openHistory());
+  $("#history-close").addEventListener("click", () => $("#history-dialog").close());
   $("#logout").addEventListener("click", async () => {
     try {
       await api("POST", "/api/session/logout");

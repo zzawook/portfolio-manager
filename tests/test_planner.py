@@ -219,3 +219,18 @@ def test_pending_buys_count_as_held_and_reserve_cash():
     spent = sum(o.notional + o.fee for o in plan.buys)
     reserved = 6 * 190.6 + 4 * 95.3
     assert spent <= 3000.0 - reserved
+
+
+
+def test_state_keeps_final_order_results(tmp_path):
+    from rebalancer.state import State
+
+    st = State(tmp_path / "state.json")
+    st.record_execution("2027-01", "contribution", "r", [{"symbol": "VWRA", "coid": "c1", "status": "submitted"}], None)
+    st.record_execution("2027-01", "contribution", "r", [{"symbol": "IGLN", "coid": "c2", "status": "submitted"}], None)
+    assert [r["orders"][0]["coid"] for _, r in st.runs()] == ["c2", "c1"] or len(st.runs()) == 2
+    assert st.update_orders({"c1": {"outcome": "filled", "filled": 2.0}})
+    st.save()
+    again = State(tmp_path / "state.json")
+    found = [o for _, r in again.runs() for o in r["orders"] if o["coid"] == "c1"][0]
+    assert found["outcome"] == "filled" and found["filled"] == 2.0

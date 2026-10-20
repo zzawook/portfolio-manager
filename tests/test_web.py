@@ -315,3 +315,30 @@ def test_port_free_ignores_connections_left_from_a_previous_run():
         assert _port_free(port)  # only a leftover connection remains: free to start again
     finally:
         client.close()
+
+
+
+def test_order_history_shows_runs_and_fills(project):
+    ctx, client = client_for(project, example="month01.yaml", today=date(2027, 1, 5))
+    plan = client.post("/api/plan", json={}).json()
+    client.post("/api/orders", json={"plan_id": plan["id"]})
+    for _ in range(300):
+        job = client.get("/api/jobs/current").json()
+        if job and job.get("status") in ("done", "finished", "completed", "question"):
+            break
+        time.sleep(0.01)
+    hist = client.get("/api/orders/history").json()
+    assert hist["runs"], hist
+    orders = hist["runs"][0]["orders"]
+    assert orders and all(o["outcome"] == "filled" and o["filled"] > 0 for o in orders)
+
+
+def test_month_reopens_when_its_orders_never_filled(project):
+    from rebalancer.state import State
+
+    ctx, client = client_for(project, example="month01.yaml", today=date(2027, 1, 5))
+    st = State(ctx.state_path)
+    st.record_execution("2027-01", "contribution", "r", [{"symbol": "VWRA", "coid": "never-sent", "status": "submitted"}], None)
+    st.save()
+    month = client.get("/api/state").json()["month"]
+    assert month["executed_at"] and month["unfilled"] is True and month["ended"] == ["VWRA"]

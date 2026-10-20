@@ -320,18 +320,57 @@ class IbkrBroker:
             tick_rules=dict(self._ticks),
         )
 
-    def order_outcomes(self, coids: list[str]) -> dict[str, str]:
-        """For orders sent by this app: 'filled' (at least partly), 'working', or 'ended'
-        (cancelled, expired at the end of the day, or rejected without a fill)."""
+    def order_details(self, coids: list[str]) -> dict[str, dict]:
+        """What became of orders sent by this app, by client order id:
+        outcome 'filled', 'partial' (some filled, rest still working), 'working',
+        or 'ended' (cancelled, expired at the close, or rejected without a fill);
+        with filled quantity, average price, commission and last fill time."""
         wanted = {c for c in coids if c}
         if not wanted:
             return {}
-        working = {str(o.get("order_ref") or "") for o in self.client.live_orders() if str(o.get("status") or "") in OPEN_STATUSES}
-        filled = {str(t.get("order_ref") or "") for t in self.client.trades()}
-        out = {}
+        working = {
+            str(o.get("order_ref") or ""): o
+            for o in self.client.live_orders()
+            if str(o.get("status") or "") in OPEN_STATUSES
+        }
+        fills: dict[str, dict] = {}
+        for t in self.client.trades():
+            ref = str(t.get("order_ref") or "")
+            if ref not in wanted:
+                continue
+            try:
+                size = float(t.get("size") or 0)
+                price = float(t.get("price") or 0)
+                fee = float(t.get("commission") or 0)
+            except (TypeError, ValueError):
+                continue
+            f = fills.setdefault(ref, {"filled": 0.0, "cost": 0.0, "commission": 0.0, "time": 0})
+            f["filled"] += size
+            f["cost"] += size * price
+            f["commission"] += fee
+            f["time"] = max(f["time"], int(t.get("trade_time_r") or 0))
+        out: dict[str, dict] = {}
         for c in wanted:
-            out[c] = "filled" if c in filled else "working" if c in working else "ended"
+            f = fills.get(c)
+            if f and f["filled"] > 0:
+                outcome = "partial" if c in working else "filled"
+                out[c] = {
+                    "outcome": outcome,
+                    "filled": f["filled"],
+                    "avg_price": round(f["cost"] / f["filled"], 4),
+                    "commission": round(f["commission"], 2),
+                    "filled_at": f["time"],
+                }
+            else:
+                out[c] = {"outcome": "working" if c in working else "ended", "filled": 0.0}
         return out
+
+    def order_outcomes(self, coids: list[str]) -> dict[str, str]:
+        """'filled' (at least partly), 'working', or 'ended'."""
+        return {
+            c: ("filled" if d["outcome"] in ("filled", "partial") else d["outcome"])
+            for c, d in self.order_details(coids).items()
+        }
 
     def place_order(self, order: Order, client_order_id: str, confirm: ConfirmFn) -> dict:
         self.ensure_ready()

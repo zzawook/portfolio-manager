@@ -235,3 +235,20 @@ def test_snapshot_reports_working_orders_and_tick_rules():
     snap = IbkrBroker(ibkr_config(), client=Working()).snapshot()
     assert [(p.symbol, p.quantity, p.price) for p in snap.pending] == [("VWRA", 2.0, 192.10)]
     assert snap.tick_rules["SMH"][2] == (100.0, 0.02)
+
+
+def test_order_details_from_trades_and_working_orders():
+    class Book(FakeClient):
+        open_orders = [{"order_ref": "c2", "status": "Submitted"}, {"order_ref": "c3", "status": "PreSubmitted"}]
+
+        def trades(self, days=7):
+            return [
+                {"order_ref": "c1", "size": 1, "price": "190.0", "commission": "1.10", "trade_time_r": 5},
+                {"order_ref": "c1", "size": 1, "price": "192.0", "commission": "1.00", "trade_time_r": 9},
+                {"order_ref": "c2", "size": 1, "price": "80.5", "commission": "2.06", "trade_time_r": 7},
+                {"order_ref": "other", "size": 9, "price": "1", "commission": "0"},
+            ]
+
+    d = IbkrBroker(ibkr_config(), client=Book()).order_details(["c1", "c2", "c3", "c4"])
+    assert d["c1"] == {"outcome": "filled", "filled": 2.0, "avg_price": 191.0, "commission": 2.1, "filled_at": 9}
+    assert d["c2"]["outcome"] == "partial" and d["c3"]["outcome"] == "working" and d["c4"]["outcome"] == "ended"

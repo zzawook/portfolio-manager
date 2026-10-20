@@ -61,6 +61,26 @@ class State:
         """Add the buy step of a two-step rebalance to the month's record."""
         self.data["executions"][key]["orders"].extend(results)
 
+    def runs(self) -> list[tuple[str, dict]]:
+        """Every recorded run, newest first, including earlier runs of a repeated month."""
+        out = []
+        for key, rec in self.data["executions"].items():
+            while rec:
+                out.append((key, rec))
+                rec = rec.get("previous")
+        return sorted(out, key=lambda kr: kr[1].get("at", ""), reverse=True)
+
+    def update_orders(self, details: dict[str, dict]) -> bool:
+        """Store what became of orders (by client order id). Returns True if anything changed."""
+        changed = False
+        for _, rec in self.runs():
+            for o in rec.get("orders") or []:
+                d = details.get(str(o.get("coid") or ""))
+                if d and any(o.get(k) != v for k, v in d.items()):
+                    o.update(d)
+                    changed = True
+        return changed
+
     def execution(self, key: str) -> Optional[dict]:
         return self.data["executions"].get(key)
 

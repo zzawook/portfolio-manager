@@ -54,9 +54,22 @@ class MockBroker:
             pending=list(self.pending),
         )
 
+    def order_details(self, coids: list[str]) -> dict[str, dict]:
+        sent = dict(self.submitted)
+        out = {}
+        for c in coids:
+            if not c:
+                continue
+            o = sent.get(c)
+            out[c] = (
+                {"outcome": "filled", "filled": float(o.quantity), "avg_price": o.limit_price, "commission": o.fee, "filled_at": 0}
+                if o
+                else {"outcome": "ended", "filled": 0.0}
+            )
+        return out
+
     def order_outcomes(self, coids: list[str]) -> dict[str, str]:
-        sent = {c for c, _ in self.submitted}
-        return {c: ("filled" if c in sent else "ended") for c in coids if c}
+        return {c: ("filled" if d["outcome"] == "filled" else "ended") for c, d in self.order_details(coids).items()}
 
     def place_order(self, order: Order, client_order_id: str, confirm: ConfirmFn) -> dict:
         self.cash += order.cash_effect  # the estimated fee is charged as if it were the real one

@@ -346,6 +346,62 @@ class App:
     def _job_active(self) -> bool:
         return self.job is not None and self.job.active
 
+    def order_history(self) -> dict:
+        """Every run the app has recorded, with what became of each order. Results that are
+        final (filled or ended) are written back to the state file, so they stay known after
+        IBKR's 7-day trade history has moved on."""
+        state = State(self.state_path)
+        runs = state.runs()
+        open_coids = [
+            str(o.get("coid"))
+            for _, rec in runs
+            for o in rec.get("orders") or []
+            if o.get("coid") and o.get("status") == "submitted" and o.get("outcome") not in ("filled", "ended")
+        ]
+        note = ""
+        if open_coids:
+            try:
+                with self.broker_lock:
+                    if self.kind == "mock":
+                        details = self.mock.order_details(open_coids)
+                    else:
+                        details = IbkrBroker(self.saved, client=self.gateway).order_details(open_coids)
+                final = {c: d for c, d in details.items() if d.get("outcome") in ("filled", "ended")}
+                if final and state.update_orders(final):
+                    state.save()
+                for _, rec in runs:  # show the latest, including still-working ones
+                    for o in rec.get("orders") or []:
+                        d = details.get(str(o.get("coid") or ""))
+                        if d:
+                            o.update(d)
+            except Exception as e:
+                note = f"IBKR에서 체결 결과를 받지 못했어요 ({e}). 저장된 결과만 보여 줘요."
+        out = []
+        for key, rec in runs:
+            orders = []
+            for o in rec.get("orders") or []:
+                status = o.get("status")
+                outcome = o.get("outcome") or ("ended" if status in ("rejected", "error", "skipped") else "unknown")
+                if status == "rejected":
+                    outcome = "rejected"
+                orders.append(
+                    {
+                        "symbol": o.get("symbol"),
+                        "side": o.get("side"),
+                        "side_label": SIDE_LABELS.get(o.get("side"), o.get("side")),
+                        "quantity": o.get("quantity"),
+                        "limit": o.get("limit"),
+                        "outcome": outcome,
+                        "filled": o.get("filled", 0.0),
+                        "avg_price": o.get("avg_price"),
+                        "commission": o.get("commission"),
+                        "filled_at": o.get("filled_at") or 0,
+                        "detail": o.get("detail") or "",
+                    }
+                )
+            out.append({"month": key, "at": rec.get("at"), "mode_label": MODE_LABELS.get(rec.get("mode"), rec.get("mode")), "orders": orders})
+        return {"runs": out, "note": note}
+
     def month_view(self, key: str) -> dict:
         """This month's run, and whether its orders ended without any fill (then the month
         is open again: day orders that never filled are cancelled by IBKR at the close)."""
@@ -934,6 +990,10 @@ def create_app(ctx: App, allowed_hosts: set[str], webauth: Optional[WebAuth] = N
         if method == "GET" and not uri.startswith("/v1/api/"):
             return RedirectResponse(f"/login?next={quote(_safe_next(uri), safe='')}", status_code=303)
         return JSONResponse({"detail": "로그인이 필요해요."}, status_code=401)
+
+    @app.get("/api/orders/history")
+    def order_history():
+        return ctx.order_history()
 
     @app.get("/api/ibkr/status")
     def ibkr_status(request: Request):

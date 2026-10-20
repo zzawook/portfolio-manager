@@ -1888,3 +1888,38 @@ details.more[open] summary {
     animation: none !important;
   }
 }
+
+/* Order history ------------------------------------------------------------ */
+
+.history-run {
+  margin: 18px 0 8px;
+  font-size: var(--fs-s);
+  color: var(--ink-2);
+}
+
+.history-run:first-child {
+  margin-top: 0;
+}
+
+.outcome {
+  font-weight: 600;
+}
+
+.outcome-filled { color: var(--good-text); }
+.outcome-partial,
+.outcome-working { color: var(--ink); }
+.outcome-ended,
+.outcome-unknown { color: var(--muted); }
+.outcome-rejected { color: var(--critical); }
+
+.outcome-detail {
+  display: block;
+  max-width: 280px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  white-space: normal;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
