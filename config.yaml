@@ -28,11 +28,11 @@ rules:
 # 기본값은 IBKR Pro Fixed, 런던거래소(LSE) 달러 거래 기준이에요 (2026-10 IBKR 싱가포르 공식 표).
 # Tiered를 쓰면 아래 세 줄을 바꾸세요: min_per_order 1.70, max_per_order 39, extra_per_order 0.21
 # (Tiered는 주문 금액 약 7,000불까지 Fixed보다 싸요. IBKR 설정에서 요금제를 바꿀 수 있어요.)
-fees:
+fees:                              # IBKR Pro Tiered, LSE 달러 거래 기준 (Fixed면 min 4.00, max 0, extra 0)
   rate_pct: 0.05                   # 거래 금액의 0.05%
-  min_per_order: 4.00              # 주문당 최소
-  max_per_order: 0                 # 주문당 최대 (0이면 상한 없음)
-  extra_per_order: 0               # 거래소와 청산 수수료 (Tiered일 때만)
+  min_per_order: 1.70              # 주문당 최소
+  max_per_order: 39                # 주문당 최대 (0이면 상한 없음)
+  extra_per_order: 0.21            # 거래소와 청산 수수료 (Tiered일 때만)
   gst_pct: 9                       # 싱가포르 거주자는 수수료에 GST 9%가 붙어요
   warn_pct: 1.0                    # 수수료가 주문 금액의 이 비율(%) 이상이면 경고
   fx_rate_bp: 0.2                  # SGD를 USD로 바꿀 때 IBKR 환전 수수료 (0.2bp, 최소 2불)
