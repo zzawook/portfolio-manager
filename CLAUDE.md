@@ -36,18 +36,16 @@ Jae Hyeok's personal app that keeps an IBKR account at target ETF weights (core/
 ## Deployment
 
 - Server: EC2 `openclaw-singapore` (`i-0d80fbe5857aa1141`, ap-southeast-1, Ubuntu 22.04, user `ubuntu`), Elastic IP 54.255.220.60. The user's key is `~/.ssh/openclaw-sg-key.pem` on the PC. The AWS CLI on the PC is configured for this account.
-- Web screen: https://54.255.220.60 (Caddy, Let's Encrypt 6-day IP certificate, `default_sni` set because browsers send no SNI for IPs). Security group `sg-080a2968d0cd3c9e9` allows 22, 80, 443 (and an unrelated 3000).
+- Web screen: https://pm.54-255-220-60.sslip.io (Caddy, Let's Encrypt; HTTP/1.1 and HTTP/2 only). The bare IP has a 6-day IP certificate (`default_sni` set, browsers send no SNI for IPs) and redirects to the name. It must be a name: IBKR's login script stores its session cookies for a domain cut from location.hostname at the first dot, which is invalid for an IP. Security group `sg-080a2968d0cd3c9e9` allows 22, 80, 443 (and an unrelated 3000).
 - The Hermes agent runs on the same server. Leave `~/.hermes` and `hermes-gateway.service` alone. About 1.6 GiB RAM is free, so our services are capped (portfolio-ui 256M, ibkr-gateway 640M, caddy 192M) and yield first under memory pressure.
 - Update code from the PC repo folder: `SSH_KEY=~/.ssh/openclaw-sg-key.pem bash deploy/push.sh ubuntu@54.255.220.60`. Re-running updates code only; the server's `config.yaml`, `portfolio.yaml`, `.env`, `chatgpt-auth.json`, `web-auth.json` and `history/` are kept.
 - ChatGPT sign-in from the public address: the return address stays http://127.0.0.1:8765/auth/callback (loopback, as OpenAI requires); the user pastes it into the chat panel (`/api/chatgpt/callback-url`).
 
 ## Status (2026-10-20)
 
-- Running on the server: `portfolio-ui`, `ibkr-gateway`, `caddy`. Broker is `ibkr` on the live account (`IBKR_ACCOUNT_ID` in the server's `.env`). A paper account exists but was not usable yet.
-- The web password is not set yet: until the user runs `set-password` on the server, https://54.255.220.60 refuses visitors.
-- The Gateway was restarted for its new certificate, so IBKR needs a fresh login (the banner's 'IBKR 로그인').
-- IBKR's first Gateway login failed with `sso/validate` Access Denied; it worked after the user turned off Read-Only Access (Settings > Trading Platform).
-- conids are filled in the server's `portfolio.yaml` (LSEETF USD lines): VWRA 375855577, AGGU 297482848, IGLN 86656182, SMH 458512500, ZAPP 880582689, WDGF 868938564. Avoid the NASDAQ listings of SMH and WDGF.
-- Account cash is SGD only, so planning stops ("USD 현금 정보를 찾을 수 없어요") until the user converts SGD to USD in IBKR.
-- IBKR Pro with Tiered pricing (config default). LSE UK (L1) market data subscribed. UK trading permission status unconfirmed.
-- ChatGPT is signed in (done earlier through the tunnel). Monthly contributions of about USD 3,000 start in January 2027.
+- Running on the server: `portfolio-ui`, `ibkr-gateway`, `caddy`. Web password set by the user. IBKR live account connected through https://pm.54-255-220-60.sslip.io at 20:02 (authenticated, connected); live LSE quotes arrive for all six ETFs.
+- IBKR lessons: the IP-address login fails on cookie domains; `sso/validate` Access Denied came from a session left behind when the Gateway was restarted without logging out (fixed: ExecStop logs out) and from other logins on the same username; `ssodh/init` needs `compete=true` for this account, and the app must not call it right after a login (it waits 20 s).
+- conids in the server's `portfolio.yaml` (LSEETF USD lines): VWRA 375855577, AGGU 297482848, IGLN 86656182, SMH 458512500, ZAPP 880582689, WDGF 868938564. Avoid the NASDAQ listings of SMH and WDGF.
+- Account cash is SGD 1,550 only; the screen asks the user to convert to USD in IBKR before buying. No positions yet.
+- IBKR Pro, Tiered pricing (config default). A paper account (DUQ621293) exists but was not usable today. A second username for the server is recommended so phone/web logins don't end the server session.
+- ChatGPT is signed in. Monthly contributions of about USD 3,000 start in January 2027.

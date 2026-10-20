@@ -77,7 +77,7 @@ OpenRouter는 `https://openrouter.ai/api/v1`, Ollama는 `http://localhost:11434/
 
 ## 서버(EC2)에 설치
 
-서버에 올리면 고정 주소(`https://<고정 IP>`)에서 비밀번호로 들어가요. IBKR 로그인도 같은 주소 안에서 해요.
+서버에 올리면 고정 주소(`https://pm.<IP의 점을 대시로>.sslip.io`, 예: `https://pm.54-255-220-60.sslip.io`)에서 비밀번호로 들어가요. IBKR 로그인도 같은 주소 안에서 해요. IP 주소로 들어오면 이 주소로 넘겨요.
 
 **1. 앱 설치 (내 컴퓨터에서, 이 폴더 안에서)**
 
@@ -104,7 +104,9 @@ cd ~/portfolio-manager && bash deploy/install-https.sh <고정 IP>
 .venv/bin/python -m rebalancer set-password      # 웹 화면 비밀번호 (10자 이상)
 ```
 
-- Caddy가 Let's Encrypt에서 IP 주소용 인증서를 받아요. 6일짜리라 Caddy가 알아서 갱신해요.
+- 주소는 `pm.<IP>.sslip.io`예요. sslip.io는 이름 안의 IP로 연결해 주는 무료 이름이라 도메인을 살 필요가 없어요. 내 도메인이 있으면 `install-https.sh <IP> <도메인>`으로 쓸 수 있어요.
+- IP 주소가 아니라 이름을 쓰는 이유: IBKR 로그인 화면은 세션 쿠키를 주소창의 이름에서 계산한 도메인에 저장해요. IP 주소면 그 도메인이 잘못 계산돼서(`54.255.220.60` -> `.255.220.60`) 쿠키가 버려지고, IBKR 로그인이 끝나지 않아요.
+- Caddy가 Let's Encrypt 인증서를 받아서 알아서 갱신해요.
 - 비밀번호를 정하기 전에는 밖에서 들어오는 접속을 모두 막아요. 비밀번호는 해시로만 저장돼요(`web-auth.json`, git에 안 올라가요).
 - 비밀번호를 5번 틀리면 그 접속 위치는 15분 동안 잠겨요. 한 번 로그인하면 12시간 동안 안 쓰거나 7일이 지나면 다시 물어봐요. 비밀번호를 바꾸면 모든 곳에서 로그아웃돼요.
 - 밖으로 열리는 포트는 80과 443뿐이에요. 앱(8765)과 Gateway(5000)는 서버 안에서만 열려요.
@@ -123,10 +125,11 @@ SSH 터널(`bash deploy/tunnel.sh`)로 `http://127.0.0.1:8765` 에 들어가는 
 
 다른 서비스가 도는 서버에 같이 올려도 돼요. 앱은 `~/portfolio-manager` 폴더와 자기 서비스(`portfolio-ui`, `ibkr-gateway`, `caddy`)만 써요. 메모리 상한(웹 화면 256MB, IBKR Gateway 640MB, Caddy 192MB)과 낮은 CPU 우선순위로 돌고, 메모리가 모자라면 다른 서비스보다 먼저 멈춰요.
 
-IBKR 로그인에서 "Client login succeeds"가 떴는데도 연결이 안 되면 (Gateway 로그에 `sso/validate ... Access Denied`):
-- IBKR 설정의 Trading Platform > Read-Only Access를 꺼 보세요. 이 계좌에서는 이걸 끄고 나서 연결됐어요.
-- 다른 곳(웹, 휴대폰 앱, TWS)은 모두 로그아웃하고 로그인하세요.
-- Gateway는 몇 번 실패하면 재시도를 멈춰요. `sudo systemctl restart ibkr-gateway` 후 다시 로그인하세요.
+IBKR 로그인이 안 될 때 (Gateway 로그: `~/ibkr-gateway/logs/gw.<날짜>.log`)
+- **로그인 화면으로 계속 돌아와요 (`/sso/Dispatcher`가 200):** IP 주소로 접속했을 때 생겨요. `pm.<IP>.sslip.io` 같은 이름 주소로 들어가세요. 같은 이유로 `https://127.0.0.1:5000`도 안 되고, 터널을 쓸 때는 `https://localhost:5000`으로 들어가야 해요.
+- **"Client login succeeds" 뒤에 `sso/validate ... Access Denied`:** IBKR은 사용자 이름 하나에 세션 하나만 허용해요. 로그아웃 없이 끊긴 세션이나 다른 곳(IBKR 웹사이트, 휴대폰 앱, TWS) 로그인이 남아 있으면 이렇게 돼요. IBKR 웹사이트에 로그인했다가 Log Out을 누르고, 휴대폰 앱도 로그아웃한 뒤 다시 로그인하세요. Gateway 서비스는 꺼질 때 IBKR에서 먼저 로그아웃해요.
+- **Gateway가 재시도를 멈춤 (`giving up`):** 몇 번 실패하면 Gateway가 포기해요. `sudo systemctl restart ibkr-gateway` 후 다시 로그인하세요.
+- 서버 전용 사용자 이름을 하나 더 만들면(IBKR 설정의 사용자 추가), 휴대폰 앱이나 웹사이트를 써도 서버 연결이 끊기지 않아요. 시세 구독은 사용자 이름마다 따로예요.
 
 로그 보기: `sudo journalctl -u portfolio-ui -f`, `sudo journalctl -u caddy -f` (Gateway는 `~/ibkr-gateway/logs/`)
 
