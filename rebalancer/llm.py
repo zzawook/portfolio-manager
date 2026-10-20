@@ -5,6 +5,8 @@ into its own API format and back:
 
 - anthropic          Claude Messages API (anthropic SDK)
 - openai             OpenAI Responses API (tool calls on the newest OpenAI models need it)
+- chatgpt            the same Responses API, paid by the user's ChatGPT Plus or Pro plan
+                     through Sign in with ChatGPT (store=false, streaming, namespaced tools)
 - openai-compatible  Chat Completions API at any base_url: Gemini, OpenRouter, Ollama and others
 
 Neutral conversation turns:
@@ -27,6 +29,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from .chatgpt_auth import RESOURCE as CHATGPT_RESOURCE
+from .chatgpt_auth import ChatGPTAuth, ChatGPTAuthError
 from .config import PROVIDERS, AssistantSettings
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -338,6 +342,201 @@ class OpenAIChatProvider(_HttpProvider):
         return Reply(text, calls, raw=message)
 
 
+# ChatGPT plan (Sign in with ChatGPT) ---------------------------------------------------
+
+TOOL_NAMESPACE = "portfolio"
+
+PLAN_ERRORS = {
+    "subscription_sharing_usage_limit_exceeded": (
+        "ChatGPT 플랜 사용 한도에 걸렸어요. ChatGPT 설정의 사용량(Usage) 화면에서 이 앱의 한도를 확인하세요."
+    ),
+    "subscription_sharing_usage_unavailable": "ChatGPT가 지금 플랜 사용량을 확인하지 못했어요. 잠시 뒤 다시 보내 주세요.",
+}
+
+
+def _error_info(resp) -> tuple[str, str]:
+    """(code, message) from an error response body, or ("", raw text)."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        return "", str(getattr(resp, "text", "") or "")
+    err = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("code") or ""), str(err.get("message") or "")
+    return "", str(err or "")
+
+
+def _replayable(output: list) -> list[dict]:
+    """Output items that can go back as input with store=false.
+
+    Server-side ids are dropped (nothing is stored to point at), and reasoning items are
+    left out because, without stored state, they cannot be referenced again."""
+    keep: list[dict] = []
+    for item in output or []:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if kind == "function_call":
+            keep.append({k: item[k] for k in ("type", "call_id", "name", "arguments", "namespace") if k in item})
+        elif kind == "message":
+            parts = [
+                {"type": "output_text", "text": p.get("text", "")}
+                for p in item.get("content") or []
+                if isinstance(p, dict) and p.get("type") == "output_text" and p.get("text")
+            ]
+            if parts:
+                keep.append({"type": "message", "role": "assistant", "content": parts})
+    return keep
+
+
+def plan_input(history: list[dict]) -> list[dict]:
+    items: list[dict] = []
+    for turn in history:
+        if turn["role"] == "user":
+            items.append({"type": "message", "role": "user", "content": [{"type": "input_text", "text": turn["text"]}]})
+        elif turn["role"] == "assistant":
+            if turn.get("raw") is not None:
+                items.extend(turn["raw"])
+                continue
+            if turn["text"]:
+                items.append({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": turn["text"]}]})
+            for c in turn["calls"]:
+                items.append(
+                    {"type": "function_call", "call_id": c.id, "name": c.name, "arguments": json.dumps(c.arguments, ensure_ascii=False)}
+                )
+        elif turn["role"] == "tool":
+            for r in turn["results"]:
+                items.append({"type": "function_call_output", "call_id": r["call_id"], "output": r["output"]})
+    return items
+
+
+def _sse_events(resp) -> Any:
+    """Parse a server-sent event stream into JSON objects."""
+    data_lines: list[str] = []
+    for raw in resp.iter_lines(decode_unicode=True):
+        line = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+        if line == "":
+            if data_lines:
+                payload = "\n".join(data_lines)
+                data_lines = []
+                if payload.strip() == "[DONE]":
+                    return
+                try:
+                    yield json.loads(payload)
+                except ValueError:
+                    continue
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if data_lines:
+        try:
+            yield json.loads("\n".join(data_lines))
+        except ValueError:
+            return
+
+
+class ChatGPTPlanProvider:
+    name = "chatgpt"
+    label = "ChatGPT"
+
+    def __init__(self, auth: ChatGPTAuth, model: str, reasoning_effort: str = "", session=None):
+        self.auth = auth
+        self.model = model
+        self.reasoning_effort = reasoning_effort
+        self.session = session or requests.Session()
+
+    @property
+    def ready(self) -> bool:
+        return self.auth.plan_ready
+
+    def status(self) -> dict:
+        return self.auth.status()
+
+    def complete(self, system: str, history: list[dict], tools: list[dict]) -> Reply:
+        try:
+            token = self.auth.access_token()
+        except ChatGPTAuthError as e:
+            raise ProviderError(str(e)) from e
+        body: dict[str, Any] = {
+            "model": self.model,
+            "instructions": system,
+            "input": plan_input(history),
+            # The plan route takes function tools grouped in a namespace (which needs a description).
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": TOOL_NAMESPACE,
+                    "description": "포트폴리오 초안을 읽고 고치는 도구예요. 주문은 보낼 수 없어요.",
+                    "tools": [
+                        {"type": "function", "name": t["name"], "description": t["description"], "parameters": t["parameters"]}
+                        for t in tools
+                    ],
+                }
+            ],
+            "store": False,
+            "stream": True,
+        }
+        if self.reasoning_effort:
+            body["reasoning"] = {"effort": self.reasoning_effort}
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "text/event-stream"}
+        try:
+            resp = self.session.post(
+                CHATGPT_RESOURCE + "/responses", json=body, headers=headers, stream=True, timeout=(15, 300)
+            )
+        except requests.RequestException as e:
+            raise ProviderError(f"ChatGPT에 연결할 수 없어요. 인터넷 연결을 확인하세요. ({type(e).__name__})") from e
+        try:
+            if resp.status_code >= 400:
+                code, detail = _error_info(resp)
+                if resp.status_code == 401:
+                    # The next request refreshes the token. If that fails, the sign-in button comes back.
+                    self.auth.invalidate_access()
+                    raise ProviderError("ChatGPT가 로그인 토큰을 받지 않았어요. 한 번 더 보내 보세요. 계속 안 되면 다시 로그인해 주세요.")
+                if code in PLAN_ERRORS:
+                    raise ProviderError(PLAN_ERRORS[code])
+                if resp.status_code == 403:
+                    raise ProviderError(
+                        "ChatGPT가 요청을 거절했어요 (권한이나 지역 정책). Plus나 Pro 플랜 계정으로 로그인했는지 확인하세요."
+                    )
+                if resp.status_code == 429:
+                    raise ProviderError(PLAN_ERRORS["subscription_sharing_usage_limit_exceeded"])
+                raise ProviderError(f"ChatGPT 요청이 실패했어요 (HTTP {resp.status_code}). {detail[:200]}".strip())
+            final = None
+            for event in _sse_events(resp):
+                kind = event.get("type")
+                if kind in ("response.completed", "response.incomplete"):
+                    final = event.get("response") or {}
+                elif kind == "response.failed":
+                    error = (event.get("response") or {}).get("error") or {}
+                    code = error.get("code", "")
+                    raise ProviderError(PLAN_ERRORS.get(code) or f"ChatGPT 답이 실패했어요 ({code or error.get('message', '')}).")
+                elif kind == "error":
+                    code = event.get("code") or (event.get("error") or {}).get("code", "")
+                    raise ProviderError(PLAN_ERRORS.get(code) or f"ChatGPT 답이 실패했어요 ({code or event.get('message', '')}).")
+        finally:
+            close = getattr(resp, "close", None)
+            if close:
+                close()
+        if final is None:
+            raise ProviderError("ChatGPT 답이 중간에 끊겼어요. 다시 보내 주세요.")
+        output = final.get("output") or []
+        calls: list[ToolCall] = []
+        texts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "function_call":
+                calls.append(_tool_call(item.get("call_id") or item.get("id"), item.get("name"), item.get("arguments")))
+            elif item.get("type") == "message":
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") in ("output_text", "refusal"):
+                        texts.append(part.get("text") or part.get("refusal") or "")
+        text = "\n".join(t for t in texts if t).strip()
+        if final.get("status") == "incomplete" and not calls:
+            text = (text + "\n\n" if text else "") + "답이 중간에 끊겼어요."
+        return Reply(text, calls, raw=_replayable(output))
+
+
 # Choosing a provider --------------------------------------------------------------
 
 
@@ -348,19 +547,27 @@ def settings_problem(settings: AssistantSettings) -> str:
         return "assistant.model을 적어 주세요. openai-compatible은 기본 모델이 없어요."
     if settings.provider == "openai-compatible" and not settings.base_url:
         return "openai-compatible을 쓰려면 assistant.base_url에 서버 주소를 적어 주세요."
-    if settings.reasoning_effort and settings.provider != "openai":
-        return "assistant.reasoning_effort는 provider가 openai일 때만 쓸 수 있어요."
+    if settings.reasoning_effort and settings.provider not in ("openai", "chatgpt"):
+        return "assistant.reasoning_effort는 provider가 openai나 chatgpt일 때만 쓸 수 있어요."
     if settings.max_tokens < 256:
         return "assistant.max_tokens는 256 이상이어야 해요."
     return ""
 
 
-def make_provider(settings: AssistantSettings, environ: Optional[dict] = None) -> tuple[Optional[ChatProvider], str]:
-    """The configured chat provider, or None with a reason the chat stays off."""
+def make_provider(
+    settings: AssistantSettings, environ: Optional[dict] = None, auth: Optional[ChatGPTAuth] = None
+) -> tuple[Optional[ChatProvider], str]:
+    """The configured chat provider, or None with a reason the chat stays off.
+
+    The chatgpt provider is returned even before sign-in; its `ready` says whether it can answer."""
     env = os.environ if environ is None else environ
     problem = settings_problem(settings)
     if problem:
         return None, problem
+    if settings.provider == "chatgpt":
+        if auth is None:
+            return None, "ChatGPT 로그인 정보를 둘 곳이 없어요."
+        return ChatGPTPlanProvider(auth, settings.resolved_model, settings.reasoning_effort), ""
     key_env = settings.key_env
     key = env.get(key_env, "") if key_env else ""
     model = settings.resolved_model

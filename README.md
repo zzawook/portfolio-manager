@@ -37,21 +37,30 @@ python -m rebalancer ui --broker ibkr                             # IBKR 계좌
 
 화면은 내 컴퓨터(127.0.0.1)에서만 열려요. 실행할 때마다 새 세션 키를 만들어서, 다른 웹사이트가 이 화면의 API를 부를 수 없게 막아요.
 
-## 채팅에 쓸 AI 키
+## 채팅에 쓸 AI
 
-키는 `config.yaml`에 적지 말고, 프로젝트 폴더의 `.env` 파일이나 환경 변수에 넣어요. `.env`는 `.gitignore`에 들어 있어요.
+기본값은 **ChatGPT 구독**이에요 (`assistant.provider: chatgpt`). OpenAI의 Sign in with ChatGPT로 로그인하면, 이 앱이 내 ChatGPT Plus나 Pro 플랜 사용량으로 답해요. API 키도 추가 요금도 없어요.
 
-```bash
-# .env
-ANTHROPIC_API_KEY=sk-ant-...
-```
+1. 웹 화면의 채팅 창에서 'ChatGPT로 로그인'을 눌러요.
+2. ChatGPT에서 이 앱(portfolio-manager)이 플랜을 쓰도록 허용해요.
+3. `http://127.0.0.1:8765/auth/callback` 으로 돌아오면 끝이에요. 로그인 정보는 `chatgpt-auth.json`에 저장돼요 (본인만 읽을 수 있고, git에 안 올라가요).
 
-다른 회사 키를 쓰려면 `config.yaml`의 `assistant`를 바꿔요.
+알아 둘 점
+- OpenAI가 2026년 9월 말에 낸 미리보기 기능이라, 요청 형식이 바뀌면 이 앱도 고쳐야 할 수 있어요.
+- Plus나 Pro 플랜에서 돼요. Business, Enterprise, Edu 플랜은 안 돼요.
+- 약관상 본인 계정으로, 본인 컴퓨터나 본인만 쓰는 서버에서만 써야 해요. 다른 사람이 내 로그인으로 채팅하게 하면 안 돼요.
+- 사용량은 플랜에 포함된 Codex 사용량과 같은 한도에서 빠져요. ChatGPT 설정의 사용량(Usage) 화면에서 이 앱의 주간 한도를 따로 정할 수 있어요.
+- 서버에서 돌릴 때는 SSH 터널을 같은 포트(8765)로 열어야 로그인 뒤 화면으로 돌아와요 (`deploy/tunnel.sh`).
+- 로그인은 30일 동안 쓰지 않거나 ChatGPT 쪽에서 연결을 끊으면 풀려요. 그러면 채팅 창에 로그인 버튼이 다시 나와요.
+- 연결을 끊으려면 채팅 창의 '연결 끊기'를 누르거나, ChatGPT 설정의 Login connections에서 이 앱을 끊으세요.
 
-| provider | 키 변수 | 비고 |
+API 키로 쓰고 싶으면 `config.yaml`의 `assistant.provider`를 바꾸고, 키를 `.env`에 넣어요. API 사용료는 ChatGPT나 claude.ai 구독과 별도로 쓴 만큼 내요.
+
+| provider | 인증 | 비고 |
 |---|---|---|
-| `anthropic` (기본) | `ANTHROPIC_API_KEY` | 기본 모델 `claude-sonnet-5-5` |
-| `openai` | `OPENAI_API_KEY` | Responses API를 써요. 기본 모델 `gpt-6.1-sol` |
+| `chatgpt` (기본) | 채팅 창에서 로그인 | ChatGPT Plus나 Pro 플랜. 기본 모델 `gpt-6.1-sol` |
+| `openai` | `OPENAI_API_KEY` | Responses API. 기본 모델 `gpt-6.1-sol` |
+| `anthropic` | `ANTHROPIC_API_KEY` | 기본 모델 `claude-sonnet-5-5` |
 | `openai-compatible` | `api_key_env`에 적은 이름 | `base_url`과 `model`을 꼭 적어요 |
 
 `openai-compatible` 예시
@@ -64,7 +73,31 @@ assistant:
   model: (Google 문서의 모델 이름)
 ```
 
-OpenRouter는 `https://openrouter.ai/api/v1`, 내 컴퓨터의 Ollama는 `http://localhost:11434/v1`(키 없음)을 쓰면 돼요. 모델 이름은 각 회사의 모델 목록에서 확인하세요. API 사용료는 claude.ai나 ChatGPT 구독과 별도로, 쓴 만큼 각 회사에 내요. 키가 없으면 채팅만 꺼지고 나머지는 그대로 동작해요.
+OpenRouter는 `https://openrouter.ai/api/v1`, Ollama는 `http://localhost:11434/v1`(키 없음)을 쓰면 돼요. 채팅이 꺼져 있어도 나머지는 그대로 동작해요.
+
+## 서버(EC2)에 설치
+
+앱은 서버의 127.0.0.1에서만 열리고, 내 컴퓨터에서 SSH 터널로 들어가요. 보안 그룹에 포트를 새로 열 필요가 없어요 (열지 마세요).
+
+내 컴퓨터에서, 이 폴더 안에서:
+
+```bash
+bash deploy/push.sh <ssh 호스트>        # 코드를 보내고 서버에서 설치 (다시 실행하면 업데이트)
+bash deploy/tunnel.sh <ssh 호스트>      # 터널을 열어 두고
+# 브라우저: http://127.0.0.1:8765
+```
+
+`<ssh 호스트>`는 평소 `ssh` 뒤에 치는 이름이에요 (`~/.ssh/config`의 별칭이나 `ubuntu@주소`). 설치는 `portfolio-ui`라는 systemd 서비스로 등록돼서, 서버가 다시 켜져도 자동으로 실행돼요. 업데이트할 때 서버의 `config.yaml`, `portfolio.yaml`(저장한 목표), `.env`, ChatGPT 로그인, 실행 기록은 덮어쓰지 않아요.
+
+IBKR를 연결할 때는 서버에서 한 번 더:
+
+```bash
+cd ~/portfolio-manager && bash deploy/install-ibkr-gateway.sh
+```
+
+Java와 IBKR Client Portal Gateway를 설치하고, 서버 안에서 오는 연결만 받게 설정해요. 터널을 연 상태로 `https://127.0.0.1:5000` 에서 IBKR에 로그인하고, 서버의 `.env`에 `IBKR_ACCOUNT_ID`를, `config.yaml`의 `broker.type`에 `ibkr`를 넣은 뒤 `sudo systemctl restart portfolio-ui` 하면 돼요. IBKR 로그인은 하루에 한 번 이상 끊기니까, 주문하기 전에 다시 로그인하세요. 웹 화면이 켜져 있는 동안은 1분마다 세션을 유지해요.
+
+로그 보기: `sudo journalctl -u portfolio-ui -f`
 
 ## 예상 수수료
 
@@ -134,7 +167,8 @@ python -m rebalancer execute --today 2027-01-05               # 모의 실행 �
 ## 알려진 한계 (v0.2)
 
 - IBKR 연동은 공식 문서 기준으로 작성하고 가짜 응답으로 테스트했어요. 실제 Gateway에는 아직 붙여 보지 않았으니 꼭 모의계좌로 먼저 확인하세요.
-- 채팅의 OpenAI와 호환 서버 연동도 공식 문서 기준으로 작성하고 가짜 응답으로 테스트했어요.
+- 채팅의 ChatGPT 플랜, OpenAI, 호환 서버 연동도 공식 문서 기준으로 작성하고 가짜 응답으로 테스트했어요. ChatGPT 플랜 사용은 OpenAI의 미리보기 기능이라 요청 형식이 바뀔 수 있어요.
+- 서버 설치 스크립트는 Ubuntu와 Amazon Linux 기준이에요.
 - 1주 단위로만 계산해요. 소수점 매수는 하지 않아요.
 - 지정가는 센트 단위로 맞춰요. 호가 단위가 안 맞아 거부되면 다음 버전에서 IBKR 호가 규칙을 읽게 하면 돼요.
 - USD 한 통화만 지원해요. SGD를 USD로 바꾸는 건 IBKR에서 직접 하세요.
@@ -155,11 +189,13 @@ rebalancer/
   server.py              웹 서버 (127.0.0.1, 세션 키)
   static/                웹 화면 (HTML, CSS, JS)
   assistant.py           채팅: 초안만 고치는 도구들
-  llm.py                 AI 공급자 연결 (Anthropic, OpenAI, OpenAI 호환)
+  llm.py                 AI 공급자 연결 (ChatGPT 플랜, OpenAI, Anthropic, OpenAI 호환)
+  chatgpt_auth.py        Sign in with ChatGPT 로그인과 토큰 관리
   report.py              터미널 출력
   state.py               실행 기록과 목표 변경 journal
   envfile.py             .env 읽기
   brokers/mock.py        예시 파일로 동작하는 모의 브로커
   brokers/ibkr.py        Client Portal Gateway 연동
+deploy/                  서버 설치 (push, install, IBKR Gateway, 터널)
 tests/                   단위 테스트
 ```

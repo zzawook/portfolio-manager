@@ -1079,6 +1079,12 @@ select {
   font-weight: 700;
 }
 
+.chat-tools {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
 .chat-model {
   margin-top: 2px;
   font-size: var(--fs-xs);

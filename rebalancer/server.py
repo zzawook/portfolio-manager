@@ -27,10 +27,11 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from .assistant import Assistant, AssistantBusy
+from .chatgpt_auth import CALLBACK_PATH, ChatGPTAuth, ChatGPTAuthError
 from .brokers.ibkr import GatewayClient, IbkrBroker, IbkrError, account_id_for, search_contracts
 from .brokers.mock import MockBroker
 from .config import Config, ConfigError, load_config
@@ -181,6 +182,8 @@ class App:
         chat_reason: str = "",
         gateway: Optional[GatewayClient] = None,
         question_timeout: Optional[float] = None,
+        port: int = 8765,
+        keepalive: bool = False,
     ):
         self.config_path = Path(config_path).resolve()
         self.saved = load_config(self.config_path)
@@ -197,6 +200,7 @@ class App:
         self.plans: dict[str, PlanRecord] = {}
         self.job: Optional[OrderJob] = None
         self.question_timeout = question_timeout
+        self.port = port
         self._holdings: Optional[dict] = None
 
         self.mock: Optional[MockBroker] = None
@@ -208,6 +212,9 @@ class App:
         else:
             settings = self.saved.broker.ibkr
             self.gateway = gateway or GatewayClient(settings.base_url, account_id_for(self.saved), settings.verify_ssl)
+
+        if keepalive and self.gateway is not None:
+            threading.Thread(target=self._keep_gateway_alive, daemon=True, name="ibkr-tickle").start()
 
         self.chat_reason = chat_reason
         self.provider = provider
@@ -238,6 +245,15 @@ class App:
             "live": not paper,
             "detail": f"계좌 {masked}" if account else "계좌번호 없음",
         }
+
+    def _keep_gateway_alive(self, every: float = 60.0) -> None:
+        """Ping the Gateway so a logged-in IBKR session does not time out while the screen runs."""
+        while True:
+            time.sleep(every)
+            try:
+                self.gateway.tickle()
+            except Exception:  # not logged in yet, or the Gateway is down: try again later
+                pass
 
     def broker_for(self, cfg: Config):
         if self.kind == "mock":
@@ -273,13 +289,22 @@ class App:
                 "job": self.job_view(self.job) if self.job else None,
             }
 
+    def _chat_ready(self) -> bool:
+        return self.assistant is not None and bool(getattr(self.provider, "ready", True))
+
     def chat_view(self) -> dict:
         settings = self.saved.assistant
+        auth = self.provider.status() if self.provider is not None and hasattr(self.provider, "status") else None
+        reason = self.chat_reason
+        if auth and not self._chat_ready():
+            reason = auth["reason"]
         return {
-            "enabled": self.assistant is not None,
+            "enabled": self._chat_ready(),
             "provider": self.provider.label if self.provider else settings.provider,
             "model": self.provider.model if self.provider else settings.resolved_model,
-            "reason": self.chat_reason,
+            "reason": reason,
+            "auth": auth,
+            "callback": f"http://127.0.0.1:{self.port}{CALLBACK_PATH}",
             "busy": bool(self.assistant and self.assistant.busy),
             "transcript": list(self.assistant.transcript) if self.assistant else [],
         }
@@ -518,8 +543,8 @@ class App:
     # Chat --------------------------------------------------------------------
 
     def chat(self, message: str) -> dict:
-        if self.assistant is None:
-            raise ApiError(503, self.chat_reason or "채팅이 꺼져 있어요.")
+        if not self._chat_ready():
+            raise ApiError(503, self.chat_view()["reason"] or "채팅이 꺼져 있어요.")
         try:
             result = self.assistant.send(message)
         except AssistantBusy as e:
@@ -537,6 +562,25 @@ class App:
             except AssistantBusy as e:
                 raise ApiError(409, str(e)) from e
         return self.chat_view()
+
+    # Sign in with ChatGPT -------------------------------------------------------
+
+    def _auth(self) -> ChatGPTAuth:
+        auth = getattr(self.provider, "auth", None)
+        if not isinstance(auth, ChatGPTAuth):
+            raise ApiError(400, "config.yaml의 assistant.provider가 chatgpt일 때만 ChatGPT로 로그인할 수 있어요.")
+        return auth
+
+    def chatgpt_login(self) -> dict:
+        url = self._auth().start(f"http://127.0.0.1:{self.port}{CALLBACK_PATH}")
+        return {"url": url}
+
+    def chatgpt_callback(self, params: dict) -> dict:
+        return self._auth().finish(params)
+
+    def chatgpt_logout(self) -> dict:
+        confirmed = self._auth().sign_out()
+        return {"revoked": confirmed, "chat": self.chat_view()}
 
     # What the assistant can see and do (AssistantHost) ---------------------------
 
@@ -763,7 +807,37 @@ def create_app(ctx: App, allowed_hosts: set[str]) -> FastAPI:
     def reset_chat():
         return ctx.reset_chat()
 
+    @app.post("/api/chatgpt/login")
+    def chatgpt_login():
+        return ctx.chatgpt_login()
+
+    @app.post("/api/chatgpt/logout")
+    def chatgpt_logout():
+        return ctx.chatgpt_logout()
+
+    @app.get(CALLBACK_PATH)
+    def chatgpt_callback(request: Request):
+        # The browser lands here from ChatGPT. The one-time state value ties it to a
+        # sign-in this server started, so it needs no session token.
+        try:
+            ctx.chatgpt_callback(dict(request.query_params))
+        except ChatGPTAuthError as e:
+            return HTMLResponse(_callback_page("ChatGPT 로그인이 끝나지 않았어요", str(e)), status_code=400)
+        except ApiError as e:
+            return HTMLResponse(_callback_page("ChatGPT 로그인이 끝나지 않았어요", e.message), status_code=e.status)
+        return RedirectResponse("/?chatgpt=ok", status_code=303)
+
     return app
+
+
+def _callback_page(title: str, message: str) -> str:
+    from html import escape
+
+    return (
+        '<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{escape(title)}</title></head><body><main><h1>{escape(title)}</h1><p>{escape(message)}</p>"
+        '<p><a href="/">포트폴리오 화면으로 돌아가기</a></p></main></body></html>'
+    )
 
 
 def _port_free(port: int) -> bool:
@@ -787,15 +861,24 @@ def serve(
 
     if not _port_free(port):
         raise ConfigError(f"{port}번 포트를 이미 쓰고 있어요. --port로 다른 번호를 주세요.")
-    load_env_file(Path(config_path).resolve().parent / ".env")
+    base = Path(config_path).resolve().parent
+    load_env_file(base / ".env")
     settings = load_config(config_path).assistant
-    provider, reason = make_provider(settings)
-    ctx = App(config_path, broker_kind, mock_file, today, provider=provider, chat_reason=reason)
+    auth = ChatGPTAuth(base / "chatgpt-auth.json") if settings.provider == "chatgpt" else None
+    provider, reason = make_provider(settings, auth=auth)
+    ctx = App(
+        config_path, broker_kind, mock_file, today, provider=provider, chat_reason=reason, port=port, keepalive=True
+    )
     app = create_app(ctx, {f"127.0.0.1:{port}", f"localhost:{port}"})
     url = f"http://127.0.0.1:{port}/"
     print(f"웹 화면: {url}")
     print(f"브로커: {ctx.broker_info()['label']} ({ctx.broker_info()['detail']})")
-    print(f"채팅: 켜짐 ({provider.label}, {provider.model})" if provider else f"채팅: 꺼짐. {reason}")
+    if provider is None:
+        print(f"채팅: 꺼짐. {reason}")
+    elif not getattr(provider, "ready", True):
+        print(f"채팅: {provider.label} 로그인 전이에요. 화면의 채팅 창에서 'ChatGPT로 로그인'을 누르세요.")
+    else:
+        print(f"채팅: 켜짐 ({provider.label}, {provider.model})")
     print("끄려면 Ctrl+C")
     if open_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()

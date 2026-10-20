@@ -77,14 +77,18 @@ class FeeSettings:
         return round(max(amount * self.fx_rate_bp / 10000, self.fx_min), 2)
 
 
-PROVIDERS = ("anthropic", "openai", "openai-compatible")
-DEFAULT_MODELS = {"anthropic": "claude-sonnet-5-5", "openai": "gpt-6.1-sol"}
+PROVIDERS = ("anthropic", "openai", "chatgpt", "openai-compatible")
+DEFAULT_MODELS = {"anthropic": "claude-sonnet-5-5", "openai": "gpt-6.1-sol", "chatgpt": "gpt-6.1-sol"}
 DEFAULT_KEY_ENVS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
 @dataclass(frozen=True)
 class AssistantSettings:
-    """Which chat model the web screen uses. The API key is read from an environment variable."""
+    """Which chat model the web screen uses.
+
+    API keys are read from environment variables. The `chatgpt` provider needs no key:
+    it signs in with a ChatGPT Plus or Pro account and uses that plan (see chatgpt_auth.py).
+    """
 
     provider: str = "anthropic"
     model: str = ""

@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from rebalancer.models import BUY, SELL, AccountSnapshot, Quote
+from rebalancer.models import BUY, AccountSnapshot, Quote
 from rebalancer.planner import CONTRIBUTION, REBALANCE, REBALANCE_BUYS, PlanError, build_plan
 
 from helpers import PRICES, make_config, on_target_positions, quotes, snapshot

@@ -149,6 +149,20 @@ SYSTEM_PROMPT = """\
 """
 
 
+TOOL_NAMES = {t["name"] for t in TOOLS}
+
+
+def known_tool_name(name: str) -> str:
+    """Tool names can come back prefixed with their namespace (e.g. portfolio.set_allocation)."""
+    if name in TOOL_NAMES:
+        return name
+    for sep in (".", "/", ":", "__"):
+        tail = name.rsplit(sep, 1)[-1]
+        if tail in TOOL_NAMES:
+            return tail
+    return name
+
+
 class AssistantHost(Protocol):
     """What the chat needs from the app: the draft and read-only views of the account."""
 
@@ -255,6 +269,7 @@ class Assistant:
         return "작업이 길어져서 여기서 멈췄어요. 지금까지 바뀐 초안을 확인해 주세요."
 
     def _run_tool(self, name: str, args: dict) -> tuple[str, bool, str | None]:
+        name = known_tool_name(name)
         try:
             if name == "get_portfolio":
                 return _dumps(self.host.draft_overview()), False, None

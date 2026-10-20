@@ -585,10 +585,10 @@ function renderOverview() {
     $("#overview-title").textContent = `${SLEEVE_LABEL[S.view]} 세부 비중`;
     $("#donut-hint").textContent = "종목을 누르면 아래 목록에서 찾아 줘요. Esc를 누르면 전체로 돌아가요.";
   }
-  renderNotice(m);
+  renderNotice();
 }
 
-function renderNotice(m) {
+function renderNotice() {
   const box = $("#holdings-notice");
   const lines = [];
   let tone = "info";
@@ -1744,12 +1744,49 @@ function renderRich(text) {
   return frag;
 }
 
+function chatgptLoginCard(chat) {
+  const auth = chat.auth || {};
+  const button = el("button", {
+    type: "button",
+    class: "btn primary",
+    text: auth.signed_in ? "ChatGPT로 다시 로그인" : "ChatGPT로 로그인",
+    onclick: async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        const res = await api("POST", "/api/chatgpt/login");
+        window.location.assign(res.url);
+      } catch (err) {
+        toast(err.message);
+        e.currentTarget.disabled = false;
+      }
+    },
+  });
+  return el(
+    "div",
+    { class: "chat-off" },
+    el("p", { text: chat.reason || "ChatGPT 계정으로 로그인하면 채팅이 켜져요." }),
+    el("p", { text: "API 키는 필요 없고, 추가 요금 없이 ChatGPT 플랜 한도 안에서 써요." }),
+    el(
+      "p",
+      {},
+      "서버에서 돌릴 때는 SSH 터널을 같은 포트로 열어 둬야 로그인 뒤 이 화면으로 돌아와요. 돌아올 주소: ",
+      el("code", { text: chat.callback || "" }),
+    ),
+    el("div", {}, button),
+  );
+}
+
 function renderChat() {
   const chat = S.app.chat;
-  $("#chat-model").textContent = chat.enabled ? `${chat.provider} ${chat.model}` : "꺼져 있어요";
+  const auth = chat.auth;
+  const who = auth && auth.email ? ` (${auth.email})` : "";
+  $("#chat-model").textContent = chat.enabled ? `${chat.provider} ${chat.model}${who}` : auth ? "로그인 전이에요" : "꺼져 있어요";
+  $("#chat-logout").hidden = !(auth && auth.signed_in);
   const log = $("#chat-log");
   log.replaceChildren();
-  if (!chat.enabled) {
+  if (!chat.enabled && auth && auth.kind === "chatgpt") {
+    log.append(chatgptLoginCard(chat));
+  } else if (!chat.enabled) {
     log.append(
       el(
         "div",
@@ -1912,6 +1949,16 @@ function bind() {
       sendChat(e.target.value);
     }
   });
+  $("#chat-logout").addEventListener("click", async () => {
+    try {
+      const res = await api("POST", "/api/chatgpt/logout");
+      S.app.chat = res.chat;
+      renderChat();
+      toast(res.revoked ? "ChatGPT 연결을 끊었어요." : "이 앱의 로그인 정보를 지웠어요. ChatGPT 설정에서도 연결을 끊을 수 있어요.");
+    } catch (err) {
+      toast(err.message);
+    }
+  });
   $("#chat-reset").addEventListener("click", async () => {
     try {
       S.app.chat = await api("POST", "/api/chat/reset");
@@ -1930,6 +1977,11 @@ function bind() {
 
 async function boot() {
   bind();
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("chatgpt") === "ok") {
+    toast("ChatGPT에 로그인했어요. 이제 채팅을 쓸 수 있어요.");
+    window.history.replaceState(null, "", "/");
+  }
   try {
     S.app = await api("GET", "/api/state");
   } catch (err) {

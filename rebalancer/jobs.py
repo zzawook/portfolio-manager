@@ -141,7 +141,7 @@ class OrderJob:
     def _run(self, orders: list[Order], entries: list[dict], first_batch: bool) -> None:
         results: list[dict] = []
         try:
-            for order, entry in zip(orders, entries):
+            for order, entry in zip(orders, entries, strict=True):
                 coid = client_order_id(self.key, self._stamp, self._sequence)
                 self._sequence += 1
                 with self._lock:

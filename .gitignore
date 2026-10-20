@@ -10,9 +10,11 @@ state.json
 state.mock.json
 *.tmp
 
-# Local overrides
+# Local overrides and secrets
 .env
 config.local.yaml
+chatgpt-auth.json
+chatgpt-auth.json.tmp
 
 # Backups the web screen keeps each time it saves portfolio.yaml
 history/

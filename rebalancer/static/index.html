@@ -63,7 +63,10 @@
         <h2 id="chat-title">비중 조정 채팅</h2>
         <p class="chat-model" id="chat-model"></p>
       </div>
-      <button type="button" class="btn ghost small" id="chat-reset">새 대화</button>
+      <div class="chat-tools">
+        <button type="button" class="btn ghost small" id="chat-logout" hidden>연결 끊기</button>
+        <button type="button" class="btn ghost small" id="chat-reset">새 대화</button>
+      </div>
     </div>
     <p class="chat-note">대화로는 초안만 바뀌어요. 주문은 아래 '주문 계획 보기'에서 직접 보내야 나가요.</p>
     <div class="chat-log" id="chat-log" aria-live="polite"></div>

@@ -39,16 +39,18 @@ fees:
   fx_min: 2.0
 
 # 웹 화면의 채팅 설정. 키는 이 파일에 적지 말고 환경 변수나 .env 파일에 넣으세요 (.env는 git에 안 올라가요).
+#   chatgpt            ChatGPT Plus나 Pro 구독으로 써요 (Sign in with ChatGPT). 키 필요 없음. 채팅 창에서 로그인해요.
+#                      로그인 정보는 chatgpt-auth.json에 저장돼요 (git에 안 올라가요). 기본 모델 gpt-6.1-sol
 #   anthropic          Claude. 키: ANTHROPIC_API_KEY. 기본 모델 claude-sonnet-5-5
-#   openai             OpenAI (Responses API). 키: OPENAI_API_KEY. 기본 모델 gpt-6.1-sol
+#   openai             OpenAI API (Responses API). 키: OPENAI_API_KEY. 기본 모델 gpt-6.1-sol
 #   openai-compatible  OpenAI 호환 서버. base_url과 model을 꼭 적어요. 키 변수 이름은 api_key_env에.
 #                      Gemini   base_url: https://generativelanguage.googleapis.com/v1beta/openai  api_key_env: GEMINI_API_KEY
 #                      OpenRouter base_url: https://openrouter.ai/api/v1  api_key_env: OPENROUTER_API_KEY
 #                      Ollama(내 컴퓨터) base_url: http://localhost:11434/v1  (키 없음)
 assistant:
-  provider: anthropic
-  model: ""                        # 비워 두면 위의 기본 모델. 예: claude-opus-5-5 (더 깊게, 비용 약 2배)
+  provider: chatgpt
+  model: ""                        # 비워 두면 위의 기본 모델
   api_key_env: ""                  # 비워 두면 위의 기본 변수 이름
   base_url: ""
-  max_tokens: 4096
-  reasoning_effort: ""             # openai만: none, low, medium, high
+  max_tokens: 4096                 # chatgpt에서는 보내지 않아요 (플랜 경로가 이 값을 받지 않아요)
+  reasoning_effort: ""             # openai, chatgpt만: none, low, medium, high

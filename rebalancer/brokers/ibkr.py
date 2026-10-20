@@ -103,6 +103,10 @@ class GatewayClient:
     def auth_status(self) -> dict:
         return self._request("POST", "iserver/auth/status") or {}
 
+    def tickle(self) -> dict:
+        """Keep the Gateway's brokerage session from timing out."""
+        return self._request("POST", "tickle") or {}
+
     def iserver_accounts(self) -> dict:
         return self._request("GET", "iserver/accounts") or {}
 
@@ -128,7 +132,7 @@ class GatewayClient:
         wanted = {int(c) for c in conids}
         params = {"conids": ",".join(str(c) for c in sorted(wanted)), "fields": f"{FIELD_LAST},{FIELD_BID},{FIELD_ASK}"}
         result: dict[int, Quote] = {}
-        for attempt in range(tries):
+        for _ in range(tries):
             rows = self._request("GET", "iserver/marketdata/snapshot", params=params) or []
             for row in rows:
                 try:
