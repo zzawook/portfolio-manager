@@ -1097,7 +1097,7 @@ def serve(
     cfg = load_config(config_path)
     settings = cfg.assistant
     auth = ChatGPTAuth(base / "chatgpt-auth.json") if settings.provider == "chatgpt" else None
-    webauth = WebAuth(base / "web-auth.json")
+    webauth = WebAuth(base / "web-auth.json", sessions_path=base / "web-sessions.json")
     provider, reason = make_provider(settings, auth=auth)
     ctx = App(
         config_path, broker_kind, mock_file, today, provider=provider, chat_reason=reason, port=port, keepalive=True

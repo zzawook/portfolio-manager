@@ -16,6 +16,8 @@ config.local.yaml
 chatgpt-auth.json
 web-auth.json
 web-auth.json.tmp
+web-sessions.json
+web-sessions.json.tmp
 chatgpt-auth.json.tmp
 
 # Backups the web screen keeps each time it saves portfolio.yaml

@@ -41,7 +41,12 @@ java -version 2>&1 | head -1
 say "Gateway 내려받기 ($GW_DIR)"
 mkdir -p "$GW_DIR"
 curl -fsSL -o "$GW_DIR/clientportal.gw.zip" "$URL"
-(cd "$GW_DIR" && unzip -o -q clientportal.gw.zip)
+# Keep the Gateway certificate made by deploy/install-https.sh (Caddy and the app trust it).
+if [ -f "$GW_DIR/root/gateway-cert.pem" ]; then
+  (cd "$GW_DIR" && unzip -o -q clientportal.gw.zip -x root/vertx.jks)
+else
+  (cd "$GW_DIR" && unzip -o -q clientportal.gw.zip)
+fi
 
 say "이 서버 안에서 오는 연결만 받게 설정"
 if [ -x "$APP_DIR/.venv/bin/python" ]; then
@@ -65,6 +70,18 @@ else
   exit 1
 fi
 
+say "로그아웃 스크립트"
+cat > "$GW_DIR/logout.sh" <<'LOGOUT'
+#!/usr/bin/env bash
+# Log the Gateway out of IBKR (used when the service stops). Verifies the Gateway's
+# own certificate when deploy/install-https.sh has made one.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CERT="$DIR/root/gateway-cert.pem"
+if [ -f "$CERT" ]; then TLS=(--cacert "$CERT"); else TLS=(-k); fi
+curl -s --max-time 5 "${TLS[@]}" -X POST -d "" https://localhost:5000/v1/api/logout >/dev/null || true
+LOGOUT
+chmod 755 "$GW_DIR/logout.sh"
+
 say "서비스 등록 ($SERVICE)"
 sudo tee "/etc/systemd/system/$SERVICE.service" >/dev/null <<UNIT
 [Unit]
@@ -76,6 +93,9 @@ Wants=network-online.target
 User=$RUN_USER
 WorkingDirectory=$GW_DIR
 ExecStart=/bin/bash $GW_DIR/bin/run.sh root/conf.yaml
+# Log out of IBKR before stopping. A session cut off without logging out can block
+# the next login for a while (IBKR allows one session per username).
+ExecStop=/bin/bash $GW_DIR/logout.sh
 Restart=on-failure
 RestartSec=10
 # Keep the Java gateway from crowding out other services on the server.

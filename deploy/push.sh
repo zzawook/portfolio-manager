@@ -28,7 +28,7 @@ remote "$HOST" "mkdir -p '$DIR'"
 tar -czf - \
   --exclude=./.git --exclude=./.venv --exclude='__pycache__' --exclude=./.pytest_cache \
   --exclude='*.egg-info' --exclude=./.ruff_cache --exclude=./.env --exclude='./state*.json' --exclude=./history \
-  --exclude='./chatgpt-auth.json*' --exclude='./web-auth.json*' --exclude=./config.yaml --exclude=./portfolio.yaml \
+  --exclude='./chatgpt-auth.json*' --exclude='./web-auth.json*' --exclude='./web-sessions.json*' --exclude=./config.yaml --exclude=./portfolio.yaml \
   . | remote "$HOST" "tar -xzf - -C '$DIR'"
 
 for f in config.yaml portfolio.yaml; do

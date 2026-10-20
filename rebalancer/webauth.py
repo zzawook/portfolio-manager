@@ -2,9 +2,10 @@
 
 - The password is stored only as a scrypt hash in web-auth.json (mode 600, kept out of
   git). It is set on the server with `python -m rebalancer set-password`.
-- A successful login gets a random session id in an HttpOnly cookie. Sessions live in
-  memory: they end after `IDLE_HOURS` without use, after `MAX_DAYS` in any case, when the
-  password changes, and when the server restarts.
+- A successful login gets a random session id in an HttpOnly cookie. Sessions end after
+  `IDLE_HOURS` without use, after `MAX_DAYS` in any case, and when the password changes.
+  They are kept in web-sessions.json (mode 600, only a SHA-256 of each id), so a restart
+  or an update does not sign anyone out.
 - Failed attempts are limited per client and in total, so the password cannot be
   guessed by trying many times.
 """
@@ -98,17 +99,64 @@ class _Session:
     password_version: str
 
 
+def _sid_key(sid: str) -> str:
+    return hashlib.sha256(sid.encode("utf-8")).hexdigest()
+
+
 class WebAuth:
-    def __init__(self, path: str | Path, clock: Callable[[], float] = time.time):
+    def __init__(
+        self,
+        path: str | Path,
+        clock: Callable[[], float] = time.time,
+        sessions_path: str | Path | None = None,
+    ):
         self.path = Path(path)
         self.clock = clock
+        self.sessions_path = Path(sessions_path) if sessions_path else None
         self._lock = threading.Lock()
-        self._sessions: dict[str, _Session] = {}
+        self._sessions: dict[str, _Session] = {}  # keyed by SHA-256 of the session id
+        self._saved_at = 0.0
+        self._load_sessions()
         self._failures: dict[str, list[float]] = {}
         self._all_failures: list[float] = []
         self._locked_until: dict[str, float] = {}
         self._all_locked_until = 0.0
         self._seen_version = ""
+
+    # Sessions on disk ---------------------------------------------------------------
+
+    def _load_sessions(self) -> None:
+        if self.sessions_path is None:
+            return
+        try:
+            data = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+            for key, v in (data.get("sessions") or {}).items():
+                self._sessions[str(key)] = _Session(float(v["created"]), float(v["last_used"]), str(v["v"]))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            self._sessions = {}
+
+    def _save_sessions(self, force: bool = True) -> None:
+        """Write the sessions file. Called with self._lock held."""
+        if self.sessions_path is None:
+            return
+        now = self.clock()
+        if not force and now - self._saved_at < 60:
+            return  # 'last used' times only need to be roughly right on disk
+        self._saved_at = now
+        data = {
+            "sessions": {
+                k: {"created": s.created, "last_used": s.last_used, "v": s.password_version}
+                for k, s in self._sessions.items()
+            }
+        }
+        tmp = self.sessions_path.with_name(self.sessions_path.name + ".tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, self.sessions_path)
+        except OSError as e:
+            log.warning("web login: could not save sessions (%s)", e)
 
     # The stored password ------------------------------------------------------------
 
@@ -140,6 +188,7 @@ class WebAuth:
         os.replace(tmp, self.path)
         with self._lock:
             self._sessions.clear()  # a new password signs everyone out
+            self._save_sessions()
 
     # Logging in ---------------------------------------------------------------------
 
@@ -200,7 +249,8 @@ class WebAuth:
             self._locked_until.pop(client, None)
             log.warning("web login: signed in from %s", client)
             sid = secrets.token_urlsafe(32)
-            self._sessions[sid] = _Session(created=now, last_used=now, password_version=self._version(record))
+            self._sessions[_sid_key(sid)] = _Session(created=now, last_used=now, password_version=self._version(record))
+            self._save_sessions()
             return sid
 
     def check(self, sid: str) -> bool:
@@ -211,8 +261,9 @@ class WebAuth:
         if record is None:
             return False
         now = self.clock()
+        key = _sid_key(sid)
         with self._lock:
-            s = self._sessions.get(sid)
+            s = self._sessions.get(key)
             if s is None:
                 return False
             expired = (
@@ -221,11 +272,14 @@ class WebAuth:
                 or s.password_version != self._version(record)
             )
             if expired:
-                del self._sessions[sid]
+                del self._sessions[key]
+                self._save_sessions()
                 return False
             s.last_used = now
+            self._save_sessions(force=False)
             return True
 
     def logout(self, sid: str) -> None:
         with self._lock:
-            self._sessions.pop(sid, None)
+            if self._sessions.pop(_sid_key(sid), None) is not None:
+                self._save_sessions()

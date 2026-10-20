@@ -313,3 +313,23 @@ def test_pasted_chatgpt_return_address_is_checked(project, auth):
     assert bad.status_code == 400
     ok = client.post("/api/chatgpt/callback-url", json={"url": " http://127.0.0.1:8765/auth/callback?code=abc&state=xyz "})
     assert ok.status_code == 200 and seen == {"code": "abc", "state": "xyz"}
+
+
+def test_sessions_survive_a_restart(tmp_path, clock):
+    first = WebAuth(tmp_path / "web-auth.json", clock=clock, sessions_path=tmp_path / "web-sessions.json")
+    first.set_password(PASSWORD)
+    sid = first.login(PASSWORD, "me")
+    stored = (tmp_path / "web-sessions.json").read_text()
+    assert sid not in stored  # only a hash of the id is on disk
+    assert stat.S_IMODE(os.stat(tmp_path / "web-sessions.json").st_mode) == 0o600
+    again = WebAuth(tmp_path / "web-auth.json", clock=clock, sessions_path=tmp_path / "web-sessions.json")
+    assert again.check(sid)
+    again.logout(sid)
+    assert not WebAuth(tmp_path / "web-auth.json", clock=clock, sessions_path=tmp_path / "web-sessions.json").check(sid)
+
+
+def test_broken_sessions_file_is_ignored(tmp_path, clock):
+    (tmp_path / "web-sessions.json").write_text("{not json")
+    a = WebAuth(tmp_path / "web-auth.json", clock=clock, sessions_path=tmp_path / "web-sessions.json")
+    a.set_password(PASSWORD)
+    assert a.check(a.login(PASSWORD, "me"))
