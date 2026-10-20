@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import secrets
 import socket
 import threading
@@ -841,7 +842,15 @@ def _callback_page(title: str, message: str) -> str:
 
 
 def _port_free(port: int) -> bool:
+    """True when nothing is listening on the port.
+
+    Connections left over from a previous run (FIN_WAIT, TIME_WAIT, e.g. a browser that
+    stayed connected through an SSH tunnel) don't count: uvicorn binds with SO_REUSEADDR
+    on Unix too, so they don't stop it. On Windows SO_REUSEADDR would let the bind steal
+    a port in use, so it is left off there."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if os.name != "nt":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", port))
         except OSError:

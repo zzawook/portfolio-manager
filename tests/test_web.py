@@ -288,3 +288,24 @@ def test_ibkr_flow_with_conid_lookup_and_warning_approval(project, monkeypatch):
     assert statuses[0] == "submitted" and set(statuses[1:]) == {"declined"}
     assert gateway.replies[0] == ("r1", True) and all(c is False for _, c in gateway.replies[1:])
     assert gateway.orders[0]["orderType"] == "LMT" and gateway.orders[0]["tif"] == "DAY"
+
+
+def test_port_free_ignores_connections_left_from_a_previous_run():
+    import socket
+
+    from rebalancer.server import _port_free
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen()
+    port = srv.getsockname()[1]
+    assert not _port_free(port)  # something is listening: really in use
+    client = socket.create_connection(("127.0.0.1", port))
+    conn, _ = srv.accept()
+    conn.close()  # the old server closes first while the client (a tunnel) stays connected
+    srv.close()
+    try:
+        assert _port_free(port)  # only a leftover connection remains: free to start again
+    finally:
+        client.close()
