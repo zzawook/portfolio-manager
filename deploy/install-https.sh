@@ -3,11 +3,17 @@
 # screen's password. Run it on the server from the project folder, after
 # deploy/install.sh (and deploy/install-ibkr-gateway.sh if you use IBKR):
 #
-#   bash deploy/install-https.sh <공인 IP 또는 도메인>
+#   bash deploy/install-https.sh <공인 IP> [도메인]
+#
+# The screen is served at a host name, by default pm.<IP with dashes>.sslip.io (sslip.io
+# answers any such name with the IP inside it, so no domain needs to be bought). The
+# IP address itself redirects there. A name is needed because IBKR's login page saves
+# its session cookies for a domain it derives from the address bar: for an IP address
+# that domain is invalid, the cookies are dropped, and the IBKR login never completes.
 #
 # What it does
-# - Installs Caddy, which gets a Let's Encrypt certificate for the address (for an IP
-#   address: the 6-day certificate Let's Encrypt issues for IPs; Caddy renews it).
+# - Installs Caddy, which gets Let's Encrypt certificates for the name and the IP
+#   (the IP's is the 6-day certificate Let's Encrypt issues for IPs; Caddy renews both).
 # - Caddy sends everything to the web screen on 127.0.0.1:8765. The IBKR Gateway's
 #   login pages (/sso/..., /v1/api/...) go to the Gateway on 127.0.0.1:5000, but only
 #   after the web screen confirms the visitor is signed in (forward_auth).
@@ -19,7 +25,12 @@
 # The security group must allow TCP 80 (certificate checks, redirect) and 443.
 set -euo pipefail
 
-PUBLIC_HOST="${1:?사용법: bash deploy/install-https.sh <공인 IP 또는 도메인>}"
+IP="${1:?사용법: bash deploy/install-https.sh <공인 IP> [도메인]}"
+if ! [[ "$IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "첫 번째 값은 공인 IPv4 주소여야 해요 (예: 54.255.220.60)."
+  exit 1
+fi
+PUBLIC_HOST="${2:-pm.${IP//./-}.sslip.io}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GW_DIR="${GW_DIR:-$HOME/ibkr-gateway}"
 PORT="${PORT:-8765}"
@@ -107,6 +118,9 @@ PY
 .venv/bin/python -m rebalancer check >/dev/null && echo "설정 확인 끝"
 
 say "Caddy 설정"
+if ! getent hosts "$PUBLIC_HOST" | grep -q "^$IP\b"; then
+  echo "주의: $PUBLIC_HOST 가 아직 $IP 로 연결되지 않아요. 인증서 발급이 실패할 수 있어요."
+fi
 HOST_RE="$(printf '%s' "$PUBLIC_HOST" | sed 's/[.]/\\./g')"
 TRUST=""
 if [ -n "$GW_PEM" ]; then
@@ -118,17 +132,10 @@ sudo tee /etc/caddy/Caddyfile >/dev/null <<CADDY
 {
 	# Browsers send no server name (SNI) when they open an IP address, so say which
 	# certificate to use then.
-	default_sni $PUBLIC_HOST
+	default_sni $IP
 }
 
 https://$PUBLIC_HOST {
-	tls {
-		# Let's Encrypt issues IP-address certificates only with the 6-day profile.
-		issuer acme {
-			profile shortlived
-		}
-	}
-
 	# The IBKR Gateway's login pages and API: only for people signed in to the web screen.
 	@ibkr path /sso/* /css/* /fonts/* /images/* /scripts/* /portal.proxy/* /v1/api/*
 	handle @ibkr {
@@ -136,10 +143,9 @@ https://$PUBLIC_HOST {
 			uri /auth/check
 		}
 		reverse_proxy https://127.0.0.1:5000 {
-			# IBKR only completes the login (and its session check) when the browser seems
-			# to be on https://localhost:5000, as with a local Gateway. Present every request
-			# that way, drop the visitor's address, and keep the web screen's own login
-			# cookie away from IBKR.
+			# Present requests the way a browser on https://localhost:5000 would make them
+			# (the only setup IBKR documents), drop the visitor's address, and keep the web
+			# screen's own login cookie away from IBKR.
 			header_up Host localhost:5000
 			header_up Origin "^https://$HOST_RE(:443)?$" "https://localhost:5000"
 			header_up Referer "^https://$HOST_RE(:443)?/" "https://localhost:5000/"
@@ -149,6 +155,7 @@ https://$PUBLIC_HOST {
 			header_up -X-Real-IP
 			header_up Cookie "pm_session=[^;]*;?\s*" ""
 			header_down Location "^https://(localhost|127\.0\.0\.1):5000" "https://{host}"
+			header_down Set-Cookie "(?i);\s*domain=localhost" ""
 			transport http {
 				$TRUST
 			}
@@ -163,6 +170,17 @@ https://$PUBLIC_HOST {
 		Strict-Transport-Security "max-age=31536000"
 		-Server
 	}
+}
+
+# The bare IP address: move people to the name (IBKR's login needs a name).
+https://$IP {
+	tls {
+		# Let's Encrypt issues IP-address certificates only with the 6-day profile.
+		issuer acme {
+			profile shortlived
+		}
+	}
+	redir https://$PUBLIC_HOST{uri} 302
 }
 CADDY
 sudo caddy fmt --overwrite /etc/caddy/Caddyfile >/dev/null 2>&1 || true
