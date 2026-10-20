@@ -9,7 +9,7 @@ from typing import Callable
 from .brokers import Broker
 from .config import Config
 from .models import SELL, AccountSnapshot, Order, Plan
-from .planner import REBALANCE, REBALANCE_BUYS, build_plan
+from .planner import REBALANCE, REBALANCE_BUYS, build_plan, spendable_cash
 from .report import format_plan
 from .state import State, month_key
 
@@ -34,7 +34,7 @@ def safety_problems(cfg: Config, plan: Plan, snap: AccountSnapshot) -> list[str]
             problems.append(f"{o.symbol}: 보유 수량보다 많이 팔려고 해요.")
     buy_cost = sum(o.notional + o.fee for o in plan.buys)
     sell_net = sum(o.notional - o.fee for o in plan.sells)
-    if buy_cost > snap.cash + sell_net + 0.01:
+    if buy_cost > spendable_cash(cfg, snap) + sell_net + 0.01:
         problems.append(f"매수 합계({buy_cost:,.2f}, 예상 수수료 포함)가 쓸 수 있는 현금보다 많아요.")
     return problems
 

@@ -34,6 +34,13 @@ def sleeve_weights(cfg: Config, weights: dict[str, float]) -> dict[str, float]:
     return out
 
 
+def _other_cash(snap: AccountSnapshot, names_only: bool = False) -> str:
+    held = {c: a for c, a in snap.other_cash.items() if a > 0}
+    if names_only:
+        return ", ".join(held) or "다른 통화"
+    return ", ".join(f"{c} {a:,.2f}" for c, a in held.items())
+
+
 def format_plan(cfg: Config, snap: AccountSnapshot, plan: Plan) -> str:
     ccy = cfg.base_currency
     invested = plan.total_value - plan.cash
@@ -41,6 +48,11 @@ def format_plan(cfg: Config, snap: AccountSnapshot, plan: Plan) -> str:
         f"== 계획: {MODE_LABELS.get(plan.mode, plan.mode)} ==",
         f"이유: {plan.reason}",
         f"총자산 {plan.total_value:,.2f} {ccy} (투자 {invested:,.2f} + 현금 {plan.cash:,.2f})",
+        *(
+            [f"  현금 중 {plan.fx_cash:,.2f} {ccy}는 다른 통화 현금이에요 ({_other_cash(snap)}). 살 때 IBKR이 자동으로 바꿔요."]
+            if plan.fx_cash
+            else []
+        ),
         "",
         f"{'Symbol':<8}{'Target':>8}{'Now':>8}{'Diff(pp)':>10}{'After':>8}",
     ]
@@ -80,6 +92,11 @@ def format_plan(cfg: Config, snap: AccountSnapshot, plan: Plan) -> str:
         )
         lines.append(f"예상 수수료 합계 {plan.fee_total:,.2f} {ccy} (주문 금액의 {fee_share:.2f}%)")
         lines.append(f"  수수료 기준: {fee_rule(cfg)}. 실제 금액은 IBKR 체결 내역에서 확인하세요.")
+        if plan.fx_needed:
+            lines.append(
+                f"자동 환전 예상: 약 {plan.fx_needed:,.2f} {ccy}어치를 {_other_cash(snap, names_only=True)}에서 바꿔요 "
+                f"(환율에 {cfg.fees.auto_fx_pct:g}% 반영, 약 {plan.fx_cost:,.2f} {ccy})."
+            )
         if plan.mode == CONTRIBUTION and plan.projected_cash > max(cfg.rules.min_order_value, 0.1 * plan.total_value):
             lines.append(
                 f"남는 현금은 다음 실행 때 모자란 종목을 사는 데 써요 (한 번에 최대 {cfg.rules.max_buy_orders}종목)."

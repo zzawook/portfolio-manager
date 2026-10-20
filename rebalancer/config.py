@@ -25,6 +25,10 @@ class Rules:
     min_value_for_rebalance: float = 20000.0
     limit_buffer_pct: float = 0.3
     max_satellite_idea_pct: float = 15.0
+    # Spend cash held in other currencies (e.g. SGD). In a cash account IBKR converts it
+    # automatically when a buy settles; fx_buffer_pct is left unused for rate moves.
+    auto_fx: bool = True
+    fx_buffer_pct: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,7 @@ class FeeSettings:
     warn_pct: float = 1.0  # warn when the fee is this share of an order or more
     fx_rate_bp: float = 0.2  # IBKR spot FX: 0.2 basis points of trade value
     fx_min: float = 2.0  # at least USD 2.00 per conversion
+    auto_fx_pct: float = 0.03  # IBKR's automatic conversion: about 0.03% added to the rate, no commission
 
     def estimate(self, notional: float) -> float:
         if notional <= 0:
@@ -368,6 +373,10 @@ def config_problems(cfg: Config) -> list[str]:
         errors.append("rules.annual_rebalance_month는 1~12 사이여야 해요.")
     if not 0 <= r.limit_buffer_pct <= 5:
         errors.append("rules.limit_buffer_pct는 0~5 사이여야 해요.")
+    if not 0 <= r.fx_buffer_pct <= 20:
+        errors.append("rules.fx_buffer_pct는 0~20 사이여야 해요.")
+    if not 0 <= cfg.fees.auto_fx_pct <= 2:
+        errors.append("fees.auto_fx_pct는 0~2 사이여야 해요.")
     if cfg.broker.type not in ("mock", "ibkr"):
         errors.append("broker.type은 mock 또는 ibkr여야 해요.")
     f = cfg.fees

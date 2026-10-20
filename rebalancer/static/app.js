@@ -606,13 +606,20 @@ function renderNotice() {
   }
   const H = S.holdings;
   if (H) {
-    const other = Object.entries(H.other_cash || {});
+    const other = Object.entries(H.other_cash || {}).filter(([, amt]) => amt > 0);
     const otherText = other.map(([cur, amt]) => `${cur} ${Number(amt).toLocaleString("en-US", { maximumFractionDigits: 2 })}`).join(", ");
-    if (other.length && H.cash <= 0) {
+    const fx = H.fx || {};
+    if (other.length && fx.auto && fx.usable > 0) {
+      lines.push(
+        `다른 통화 현금(${otherText})은 살 때 IBKR이 자동으로 USD로 바꿔요. 지금 환율로 약 ${usd(fx.usable)}을 쓸 수 있어요 (환율 변동에 대비해 ${fx.buffer_pct}%는 남겨요, 환전 비용은 환율의 약 ${fx.markup_pct}%).`,
+      );
+      for (const note of fx.notes || []) lines.push(note);
+    } else if (other.length && fx.auto) {
       tone = "critical";
-      lines.push(`USD 현금이 없어요 (계좌 현금: ${otherText}). 이 앱은 USD로만 사니까, IBKR에서 USD로 환전하세요.`);
+      for (const note of fx.notes || []) lines.push(note);
     } else if (other.length) {
-      lines.push(`USD 말고 다른 통화 현금도 있어요 (${otherText}). 이 앱은 USD 현금만 써요.`);
+      tone = H.usd_cash > 0 ? tone : "critical";
+      lines.push(`USD 현금만 써요 (자동 환전이 꺼져 있어요). 다른 통화 현금: ${otherText}. IBKR에서 USD로 환전하거나 config.yaml의 rules.auto_fx를 켜세요.`);
     } else if (H.total <= 0 && !S.holdingsError) {
       lines.push("아직 잔고가 없어요. 입금하고 첫 주문을 보내면 여기에 비중이 나타나요.");
     }
@@ -1455,7 +1462,10 @@ function renderPlan() {
         el("div", { class: "total" }, el("span", { text: "주문 후 현금 약" }), el("strong", { class: "num", text: usd(p.projected_cash, 2) })),
       ),
     );
-    const fx = p.fx && p.fx.fee ? ` 입금한 SGD를 USD로 바꿀 땐 IBKR 환전 수수료가 따로 들어요 (월 ${usd(p.fx.amount)} 기준 약 ${usd(p.fx.fee, 2)}).` : "";
+    const auto = p.fx_auto || {};
+    const fx = auto.needed > 0
+      ? ` 매수 금액 중 약 ${usd(auto.needed, 2)}는 IBKR이 다른 통화 현금(SGD 등)을 자동으로 바꿔서 내요 (환율에 약 ${auto.markup_pct}% 반영, 약 ${usd(auto.cost, 2)}).`
+      : "";
     body.append(el("p", { class: "fine", text: `수수료 기준: ${p.fee_rule}. 실제 금액은 IBKR 체결 내역에서 확인하세요.${fx}` }));
     if (p.leftover_note) body.append(el("p", { class: "fine", text: p.leftover_note }));
   } else {

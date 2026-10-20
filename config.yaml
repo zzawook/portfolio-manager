@@ -19,6 +19,8 @@ rules:
   min_order_value: 100             # 이보다 작은 주문은 안 보내요
   max_order_value: 5000            # 1회 주문 한도 (실수 방지)
   cash_reserve: 20                 # 수수료용으로 남겨 두는 현금
+  auto_fx: true                    # USD가 모자라면 SGD 같은 다른 통화 현금으로 사요 (Cash 계좌는 IBKR이 결제할 때 자동 환전)
+  fx_buffer_pct: 1.0               # 환율 변동에 대비해 다른 통화 현금 중 쓰지 않고 남겨 두는 비율(%)
   drift_threshold_pp: 5.0          # 목표보다 이만큼(%p) 많아지면 매도 포함 리밸런싱
   annual_rebalance_month: 1        # 매년 이 달엔 리밸런싱
   min_value_for_rebalance: 20000   # 투자 금액이 이보다 작으면 팔지 않고 적립으로만 맞춰요
@@ -38,6 +40,7 @@ fees:                              # IBKR Pro Tiered, LSE 달러 거래 기준 (
   warn_pct: 1.0                    # 수수료가 주문 금액의 이 비율(%) 이상이면 경고
   fx_rate_bp: 0.2                  # SGD를 USD로 바꿀 때 IBKR 환전 수수료 (0.2bp, 최소 2불)
   fx_min: 2.0
+  auto_fx_pct: 0.03                # IBKR 자동 환전 비용: 환율에 약 0.03% 반영, 별도 수수료 없음
 
 # 웹 화면의 채팅 설정. 키는 이 파일에 적지 말고 환경 변수나 .env 파일에 넣으세요 (.env는 git에 안 올라가요).
 #   chatgpt            ChatGPT Plus나 Pro 구독으로 써요 (Sign in with ChatGPT). 키 필요 없음. 채팅 창에서 로그인해요.

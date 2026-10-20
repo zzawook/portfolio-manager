@@ -108,3 +108,75 @@ def test_unknown_positions_are_reported():
     snap = AccountSnapshot(cash=3000, positions={}, quotes=quotes(), unknown_positions=["TSLA"])
     plan = build_plan(cfg, snap, JAN)
     assert any("TSLA" in w for w in plan.warnings)
+
+
+# Cash in other currencies (IBKR converts it automatically when a buy settles) ---------
+
+
+def sgd_only(sgd=4000.0, rate=0.78):
+    from rebalancer.models import AccountSnapshot
+
+    return AccountSnapshot(cash=0.0, positions={}, quotes=quotes(), other_cash={"SGD": sgd}, fx_rates={"SGD": rate})
+
+
+def test_sgd_cash_is_spent_through_automatic_conversion():
+    cfg = make_config()
+    plan = build_plan(cfg, sgd_only(), date(2027, 1, 5))
+    usable = 4000 * 0.78 * (1 - (1.0 + 0.03) / 100)  # 1% safety margin + 0.03% markup
+    assert plan.fx_cash == pytest.approx(usable, abs=0.01)
+    assert plan.buys, "it buys with SGD"
+    cost = sum(o.notional + o.fee for o in plan.buys)
+    assert cost <= usable - cfg.rules.cash_reserve + 0.01
+    assert plan.fx_needed == pytest.approx(cost, abs=0.01)  # all of it comes from SGD
+    assert plan.fx_cost == pytest.approx(cost * 0.0003, abs=0.01)
+
+
+def test_usd_is_used_first_and_only_the_rest_is_converted():
+    from dataclasses import replace
+
+    snap = replace(sgd_only(sgd=4000), cash=500.0)
+    plan = build_plan(make_config(), snap, date(2027, 1, 5))
+    cost = sum(o.notional + o.fee for o in plan.buys)
+    assert plan.fx_needed == pytest.approx(max(0.0, cost - 500.0), abs=0.01)
+
+
+def test_auto_fx_can_be_turned_off():
+    from dataclasses import replace
+
+    with pytest.raises(PlanError):  # SGD only: nothing to spend, nothing held
+        build_plan(make_config(auto_fx=False), sgd_only(), date(2027, 1, 5))
+    plan = build_plan(make_config(auto_fx=False), replace(sgd_only(), cash=3000.0), date(2027, 1, 5))
+    assert plan.fx_cash == 0.0 and plan.fx_needed == 0.0
+    assert any("다른 통화 현금은 계산에서 뺐어요" in w for w in plan.warnings)
+
+
+def test_mock_broker_converts_like_ibkr(tmp_path):
+    from rebalancer.brokers.mock import MockBroker
+
+    f = tmp_path / "acct.yaml"
+    f.write_text("cash: 0\nother_cash: {SGD: 4000}\nfx_rates: {SGD: 0.78}\nquotes:\n  VWRA: {bid: 190, ask: 190.2, last: 190.1}\n")
+    cfg = make_config()
+    broker = MockBroker(f, cfg)
+    plan = build_plan(cfg, broker.snapshot(), date(2027, 1, 5))
+    for o in plan.buys:
+        broker.place_order(o, "x", lambda m: True)
+    after = broker.snapshot()
+    assert after.cash == pytest.approx(0.0, abs=0.01)  # the shortfall came from SGD
+    assert 0 < after.other_cash["SGD"] < 4000
+
+
+def test_missing_rate_leaves_that_currency_out_with_a_warning():
+    from dataclasses import replace
+
+    snap = replace(sgd_only(), cash=3000.0, fx_rates={})
+    plan = build_plan(make_config(), snap, date(2027, 1, 5))
+    assert plan.fx_cash == 0.0 and any("SGD 환율을 받지 못해서" in w for w in plan.warnings)
+
+
+def test_safety_check_counts_converted_cash():
+    from rebalancer.execute import safety_problems
+
+    cfg = make_config()
+    snap = sgd_only()
+    plan = build_plan(cfg, snap, date(2027, 1, 5))
+    assert not [p for p in safety_problems(cfg, plan, snap) if "현금" in p]

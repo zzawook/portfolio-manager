@@ -118,6 +118,15 @@ class GatewayClient:
         (auth status competing=false), so nothing is taken over."""
         return self._request("POST", "iserver/auth/ssodh/init", json={"publish": True, "compete": True}) or {}
 
+    def exchange_rate(self, source: str, target: str) -> Optional[float]:
+        """How much `target` one unit of `source` buys (SGD -> USD: about 0.78)."""
+        data = self._request("GET", "iserver/exchangerate", params={"source": source, "target": target}) or {}
+        try:
+            rate = float(data.get("rate"))
+        except (TypeError, ValueError):
+            return None
+        return rate if rate > 0 else None
+
     def iserver_accounts(self) -> dict:
         return self._request("GET", "iserver/accounts") or {}
 
@@ -239,9 +248,22 @@ class IbkrBroker:
             if abs(amount) >= 0.01:
                 other_cash[cur] = amount
 
+        fx_rates: dict[str, float] = {}
+        for cur, amount in other_cash.items():
+            if amount <= 0:
+                continue
+            try:
+                rate = self.client.exchange_rate(cur, ccy)
+            except IbkrError:
+                rate = None
+            if rate:
+                fx_rates[cur] = rate
+
         quotes_by_conid = self.client.snapshot(list(self.symbol_by_conid))
         quotes = {self.symbol_by_conid[c]: q for c, q in quotes_by_conid.items() if c in self.symbol_by_conid}
-        return AccountSnapshot(cash=cash, positions=positions, quotes=quotes, unknown_positions=unknown, other_cash=other_cash)
+        return AccountSnapshot(
+            cash=cash, positions=positions, quotes=quotes, unknown_positions=unknown, other_cash=other_cash, fx_rates=fx_rates
+        )
 
     def place_order(self, order: Order, client_order_id: str, confirm: ConfirmFn) -> dict:
         self.ensure_ready()

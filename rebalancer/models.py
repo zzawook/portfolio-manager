@@ -79,7 +79,8 @@ class AccountSnapshot:
     positions: dict[str, float]
     quotes: dict[str, Quote]
     unknown_positions: list[str] = field(default_factory=list)
-    other_cash: dict[str, float] = field(default_factory=dict)  # cash in other currencies, not used for buying
+    other_cash: dict[str, float] = field(default_factory=dict)  # cash in other currencies (e.g. SGD)
+    fx_rates: dict[str, float] = field(default_factory=dict)  # other currency -> base currency (1 SGD = 0.78 USD)
 
 
 @dataclass
@@ -94,6 +95,10 @@ class Plan:
     projected_weights: dict[str, float]
     projected_cash: float
     warnings: list[str] = field(default_factory=list)
+    # Cash in other currencies that IBKR converts automatically when a buy settles.
+    fx_cash: float = 0.0  # base-currency amount counted in `cash` from other currencies (after the safety margin)
+    fx_needed: float = 0.0  # how much of this plan's buys IBKR is expected to convert
+    fx_cost: float = 0.0  # estimated cost of that conversion
 
     @property
     def buys(self) -> list[Order]:

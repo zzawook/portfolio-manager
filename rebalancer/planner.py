@@ -36,6 +36,33 @@ class PlanError(RuntimeError):
     """Raised when a sensible plan cannot be built from the snapshot."""
 
 
+def fx_cash(cfg: Config, snap: AccountSnapshot) -> tuple[float, list[str]]:
+    """Base-currency cash that other-currency cash can provide through IBKR's automatic
+    conversion, after the safety margin and the conversion markup, plus warnings."""
+    notes: list[str] = []
+    held = {c: a for c, a in snap.other_cash.items() if a > 0}
+    if not held:
+        return 0.0, notes
+    listed = ", ".join(f"{c} {a:,.2f}" for c, a in held.items())
+    if not cfg.rules.auto_fx:
+        notes.append(f"{cfg.base_currency} 현금만 써요 (rules.auto_fx가 꺼져 있어요). 다른 통화 현금은 계산에서 뺐어요: {listed}.")
+        return 0.0, notes
+    keep = 1 - (cfg.rules.fx_buffer_pct + cfg.fees.auto_fx_pct) / 100
+    total = 0.0
+    for cur, amount in held.items():
+        rate = snap.fx_rates.get(cur)
+        if not rate or rate <= 0:
+            notes.append(f"{cur} 환율을 받지 못해서 {cur} 현금은 이번 계산에서 뺐어요.")
+            continue
+        total += amount * rate * keep
+    return round(max(total, 0.0), 2), notes
+
+
+def spendable_cash(cfg: Config, snap: AccountSnapshot) -> float:
+    """Base-currency cash plus what other currencies can provide (see fx_cash)."""
+    return snap.cash + fx_cash(cfg, snap)[0]
+
+
 def build_plan(
     cfg: Config,
     snap: AccountSnapshot,
@@ -67,9 +94,13 @@ def build_plan(
     for desc in snap.unknown_positions:
         warnings.append(f"설정에 없는 종목을 보유 중이에요: {desc}. 계산에서 제외했어요.")
 
+    converted, fx_notes = fx_cash(cfg, snap)
+    warnings.extend(fx_notes)
+    cash = snap.cash + converted
+
     values = {s: snap.positions.get(s, 0) * marks[s] for s in marks}
     invested = sum(values.values())
-    total = invested + snap.cash
+    total = invested + cash
     if total <= 0:
         raise PlanError("평가할 자산과 현금이 없어요.")
 
@@ -86,7 +117,7 @@ def build_plan(
                 f"{sym}: 목표에서 뺀 종목이에요. 매도는 리밸런싱 때 해요. 지금 정리하려면 매도 포함 리밸런싱으로 계산하세요."
             )
 
-    cash_available = max(0.0, snap.cash - r.cash_reserve)
+    cash_available = max(0.0, cash - r.cash_reserve)
     if mode == REBALANCE:
         orders = _rebalance_orders(cfg, snap, targets, marks, values, invested + cash_available, warnings)
     else:
@@ -103,23 +134,32 @@ def build_plan(
                 "작은 주문은 최소 수수료 때문에 비율이 커져요."
             )
 
-    if mode == CONTRIBUTION and snap.cash < r.monthly_contribution * 0.5:
+    if mode == CONTRIBUTION and cash < r.monthly_contribution * 0.5:
         warnings.append(
-            f"현금({snap.cash:,.2f})이 월 적립액({r.monthly_contribution:,.0f})의 절반보다 적어요. 입금이 됐는지 확인하세요."
+            f"현금({cash:,.2f})이 월 적립액({r.monthly_contribution:,.0f})의 절반보다 적어요. 입금이 됐는지 확인하세요."
         )
 
-    projected, projected_cash = _project(targets, marks, values, snap.cash, orders)
+    # What IBKR will convert from other currencies when the buys settle.
+    buy_cost = sum(o.notional + o.fee for o in orders if o.side == BUY)
+    sell_net = sum(o.notional - o.fee for o in orders if o.side == SELL)
+    fx_needed = round(min(max(0.0, buy_cost - snap.cash - sell_net), converted), 2) if converted else 0.0
+    fx_cost = round(fx_needed * cfg.fees.auto_fx_pct / 100, 2)
+
+    projected, projected_cash = _project(targets, marks, values, cash, orders)
     return Plan(
         mode=mode,
         reason=reason,
         total_value=total,
-        cash=snap.cash,
+        cash=cash,
         orders=orders,
         current_weights=current,
         target_weights=targets,
         projected_weights=projected,
         projected_cash=projected_cash,
         warnings=warnings,
+        fx_cash=converted,
+        fx_needed=fx_needed,
+        fx_cost=fx_cost,
     )
 
 

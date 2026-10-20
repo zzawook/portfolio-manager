@@ -48,7 +48,7 @@ from .execute import safety_problems
 from .jobs import BUY_PLAN_READY, JobError, OrderJob
 from .llm import ChatProvider, make_provider
 from .models import CORE, SATELLITE, AccountSnapshot, Plan
-from .planner import CONTRIBUTION, MODE_LABELS, REBALANCE, REBALANCE_BUYS, PlanError, build_plan
+from .planner import CONTRIBUTION, MODE_LABELS, REBALANCE, REBALANCE_BUYS, PlanError, build_plan, fx_cash
 from .portfolio import Draft, DraftConflict, DraftError, save_portfolio
 from .report import fee_rule, sleeve_weights
 from .state import State, month_key, state_path_for
@@ -139,6 +139,7 @@ def plan_view(cfg: Config, plan: Plan, problems: list[str]) -> dict:
         "fee_share": plan.fee_total / traded * 100 if traded else 0.0,
         "fee_rule": fee_rule(cfg),
         "fx": {"amount": contribution, "fee": cfg.fees.fx_estimate(contribution)},
+        "fx_auto": {"cash": plan.fx_cash, "needed": plan.fx_needed, "cost": plan.fx_cost, "markup_pct": cfg.fees.auto_fx_pct},
         "two_step": two_step,
         "send_count": len(sending),
         "weights": weights,
@@ -163,10 +164,21 @@ def holdings_view(cfg: Config, snap: AccountSnapshot, missing_conids: list[str])
             invested += value
         positions.append({"symbol": sym, "quantity": qty, "price": price, "value": value})
     prices = {sym: q.mark for sym, q in snap.quotes.items() if q.mark and sym in cfg.instruments}
+    converted, fx_notes = fx_cash(cfg, snap)
+    cash = snap.cash + converted
     return {
-        "cash": snap.cash,
+        "cash": cash,
+        "usd_cash": snap.cash,
+        "fx": {
+            "auto": cfg.rules.auto_fx,
+            "usable": converted,
+            "rates": dict(snap.fx_rates),
+            "buffer_pct": cfg.rules.fx_buffer_pct,
+            "markup_pct": cfg.fees.auto_fx_pct,
+            "notes": fx_notes,
+        },
         "invested": invested,
-        "total": invested + snap.cash,
+        "total": invested + cash,
         "positions": positions,
         "prices": prices,
         "unknown": list(snap.unknown_positions),

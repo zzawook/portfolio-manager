@@ -196,5 +196,23 @@ def test_snapshot_without_usd_cash_reports_other_currencies():
         def ledger(self):
             return {"BASE": {"cashbalance": 1550.0}, "SGD": {"cashbalance": 1550.0}}
 
+        def exchange_rate(self, source, target):
+            assert (source, target) == ("SGD", "USD")
+            return 0.78
+
     snap = IbkrBroker(ibkr_config(), client=SgdOnly()).snapshot()
-    assert snap.cash == 0.0 and snap.other_cash == {"SGD": 1550.0}
+    assert snap.cash == 0.0 and snap.other_cash == {"SGD": 1550.0} and snap.fx_rates == {"SGD": 0.78}
+
+
+def test_snapshot_survives_a_missing_exchange_rate():
+    from rebalancer.brokers.ibkr import IbkrError
+
+    class NoRate(FakeClient):
+        def ledger(self):
+            return {"SGD": {"cashbalance": 1550.0}}
+
+        def exchange_rate(self, source, target):
+            raise IbkrError("down", status=500)
+
+    snap = IbkrBroker(ibkr_config(), client=NoRate()).snapshot()
+    assert snap.other_cash == {"SGD": 1550.0} and snap.fx_rates == {}
