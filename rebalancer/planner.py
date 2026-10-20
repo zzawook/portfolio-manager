@@ -163,7 +163,7 @@ def build_plan(
     # What IBKR will convert from other currencies when the buys settle.
     buy_cost = sum(o.notional + o.fee for o in orders if o.side == BUY)
     sell_net = sum(o.notional - o.fee for o in orders if o.side == SELL)
-    fx_needed = round(min(max(0.0, buy_cost - snap.cash - sell_net), converted), 2) if converted else 0.0
+    fx_needed = round(min(max(0.0, buy_cost - max(snap.cash, 0.0) - sell_net), buy_cost, converted), 2) if converted else 0.0
     fx_cost = round(fx_needed * cfg.fees.auto_fx_pct / 100, 2)
 
     projected, projected_cash = _project(targets, marks, values, cash, orders)
