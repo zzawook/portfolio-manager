@@ -87,7 +87,7 @@ bash deploy/tunnel.sh <ssh 호스트>      # 터널을 열어 두고
 # 브라우저: http://127.0.0.1:8765
 ```
 
-`<ssh 호스트>`는 평소 `ssh` 뒤에 치는 이름이에요 (`~/.ssh/config`의 별칭이나 `ubuntu@주소`). 설치는 `portfolio-ui`라는 systemd 서비스로 등록돼서, 서버가 다시 켜져도 자동으로 실행돼요. 업데이트할 때 서버의 `config.yaml`, `portfolio.yaml`(저장한 목표), `.env`, ChatGPT 로그인, 실행 기록은 덮어쓰지 않아요.
+`<ssh 호스트>`는 평소 `ssh` 뒤에 치는 이름이에요 (`~/.ssh/config`의 별칭이나 `ubuntu@주소`). `ssh -i 키.pem`으로 접속한다면 `SSH_KEY=~/키.pem bash deploy/push.sh ubuntu@주소`처럼 앞에 붙여요 (`tunnel.sh`도 같아요). Python이나 venv 패키지가 없으면 설치 스크립트가 sudo로 깔아요. 설치는 `portfolio-ui`라는 systemd 서비스로 등록돼서, 서버가 다시 켜져도 자동으로 실행돼요. 업데이트할 때 서버의 `config.yaml`, `portfolio.yaml`(저장한 목표), `.env`, ChatGPT 로그인, 실행 기록은 덮어쓰지 않아요.
 
 IBKR를 연결할 때는 서버에서 한 번 더:
 

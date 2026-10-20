@@ -21,14 +21,27 @@ can_sudo() {
   [ -t 0 ] && sudo -v
 }
 
+find_python() {
+  PY=""
+  for c in python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+      PY="$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
 say "Python 확인"
-PY=""
-for c in python3.13 python3.12 python3.11 python3.10 python3; do
-  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
-    PY="$c"
-    break
+if ! find_python && can_sudo; then
+  echo "Python 3.10 이상이 없어서 설치해요."
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-venv
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y -q python3.11
   fi
-done
+  find_python || true
+fi
 if [ -z "$PY" ]; then
   echo "Python 3.10 이상이 필요해요."
   echo "  Ubuntu:            sudo apt-get install -y python3 python3-venv"
@@ -39,10 +52,21 @@ fi
 
 say "가상환경과 패키지 설치"
 if [ ! -x .venv/bin/python ]; then
-  if ! "$PY" -m venv .venv; then
+  if ! "$PY" -m venv .venv 2>/dev/null; then
     rm -rf .venv
-    echo "가상환경을 만들 수 없어요. Ubuntu라면 sudo apt-get install -y python3-venv 를 실행한 뒤 다시 해 주세요."
-    exit 1
+    # Ubuntu ships venv separately (python3-venv, or python3.X-venv for a non-default version).
+    if command -v apt-get >/dev/null 2>&1 && can_sudo; then
+      echo "venv 패키지를 설치해요."
+      VENV_PKG="$("$PY" -c 'import sys; print(f"python3.{sys.version_info.minor}-venv")')"
+      sudo apt-get update -qq || true
+      sudo apt-get install -y -qq python3-venv || true
+      sudo apt-get install -y -qq "$VENV_PKG" || true
+    fi
+    if ! "$PY" -m venv .venv; then
+      rm -rf .venv
+      echo "가상환경을 만들 수 없어요. Ubuntu라면 sudo apt-get install -y python3-venv 를 실행한 뒤 다시 해 주세요."
+      exit 1
+    fi
   fi
 fi
 .venv/bin/python -m pip install -q --upgrade pip
