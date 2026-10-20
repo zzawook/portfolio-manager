@@ -79,6 +79,7 @@ class AccountSnapshot:
     positions: dict[str, float]
     quotes: dict[str, Quote]
     unknown_positions: list[str] = field(default_factory=list)
+    other_cash: dict[str, float] = field(default_factory=dict)  # cash in other currencies, not used for buying
 
 
 @dataclass

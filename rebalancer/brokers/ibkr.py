@@ -229,13 +229,19 @@ class IbkrBroker:
 
         ledger = self.client.ledger()
         ccy = self.cfg.base_currency
-        if ccy not in ledger:
-            raise IbkrError(f"{ccy} 현금 정보를 찾을 수 없어요. 원장에 있는 통화: {sorted(ledger)}")
-        cash = float(ledger[ccy].get("cashbalance") or 0.0)
+        # No line for the base currency just means none is held yet (e.g. only SGD deposited).
+        cash = float((ledger.get(ccy) or {}).get("cashbalance") or 0.0)
+        other_cash = {}
+        for cur, row in ledger.items():
+            if cur in (ccy, "BASE") or not isinstance(row, dict):
+                continue
+            amount = float(row.get("cashbalance") or 0.0)
+            if abs(amount) >= 0.01:
+                other_cash[cur] = amount
 
         quotes_by_conid = self.client.snapshot(list(self.symbol_by_conid))
         quotes = {self.symbol_by_conid[c]: q for c, q in quotes_by_conid.items() if c in self.symbol_by_conid}
-        return AccountSnapshot(cash=cash, positions=positions, quotes=quotes, unknown_positions=unknown)
+        return AccountSnapshot(cash=cash, positions=positions, quotes=quotes, unknown_positions=unknown, other_cash=other_cash)
 
     def place_order(self, order: Order, client_order_id: str, confirm: ConfirmFn) -> dict:
         self.ensure_ready()

@@ -189,3 +189,12 @@ def test_broker_needs_account_and_conids(monkeypatch):
     raw["instruments"]["SMH"]["conid"] = None
     with pytest.raises(IbkrError, match="SMH"):
         IbkrBroker(make_config(raw), client=FakeClient())
+
+
+def test_snapshot_without_usd_cash_reports_other_currencies():
+    class SgdOnly(FakeClient):
+        def ledger(self):
+            return {"BASE": {"cashbalance": 1550.0}, "SGD": {"cashbalance": 1550.0}}
+
+    snap = IbkrBroker(ibkr_config(), client=SgdOnly()).snapshot()
+    assert snap.cash == 0.0 and snap.other_cash == {"SGD": 1550.0}

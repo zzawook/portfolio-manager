@@ -606,7 +606,16 @@ function renderNotice() {
   }
   const H = S.holdings;
   if (H) {
-    if (H.total <= 0 && !S.holdingsError) lines.push("아직 잔고가 없어요. 입금하고 첫 주문을 보내면 여기에 비중이 나타나요.");
+    const other = Object.entries(H.other_cash || {});
+    const otherText = other.map(([cur, amt]) => `${cur} ${Number(amt).toLocaleString("en-US", { maximumFractionDigits: 2 })}`).join(", ");
+    if (other.length && H.cash <= 0) {
+      tone = "critical";
+      lines.push(`USD 현금이 없어요 (계좌 현금: ${otherText}). 이 앱은 USD로만 사니까, IBKR에서 USD로 환전하세요.`);
+    } else if (other.length) {
+      lines.push(`USD 말고 다른 통화 현금도 있어요 (${otherText}). 이 앱은 USD 현금만 써요.`);
+    } else if (H.total <= 0 && !S.holdingsError) {
+      lines.push("아직 잔고가 없어요. 입금하고 첫 주문을 보내면 여기에 비중이 나타나요.");
+    }
     else if (H.positions.length === 0 && H.cash > 0) lines.push("아직 보유 종목이 없어요. 첫 주문을 보내면 여기에 비중이 나타나요.");
     if (H.missing_conids && H.missing_conids.length)
       lines.push(`conid가 없는 종목이 있어요: ${H.missing_conids.join(", ")}. 목록에서 종목을 펼쳐 'IBKR에서 찾기'로 채우고 저장하세요.`);

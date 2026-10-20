@@ -170,6 +170,7 @@ def holdings_view(cfg: Config, snap: AccountSnapshot, missing_conids: list[str])
         "positions": positions,
         "prices": prices,
         "unknown": list(snap.unknown_positions),
+        "other_cash": dict(snap.other_cash),
         "missing_conids": missing_conids,
         "unpriced": [p["symbol"] for p in positions if p["value"] is None],
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
