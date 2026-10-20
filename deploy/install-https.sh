@@ -133,6 +133,11 @@ sudo tee /etc/caddy/Caddyfile >/dev/null <<CADDY
 	# Browsers send no server name (SNI) when they open an IP address, so say which
 	# certificate to use then.
 	default_sni $IP
+	# HTTP/1.1 and HTTP/2 only: with HTTP/3 a browser may send cookies as separate
+	# headers, and the IBKR Gateway behind Caddy expects them in one.
+	servers {
+		protocols h1 h2
+	}
 }
 
 https://$PUBLIC_HOST {
