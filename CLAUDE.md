@@ -42,6 +42,9 @@ Jae Hyeok's personal app that keeps an IBKR account at target ETF weights (core/
 
 ## Status (2026-10-20)
 
-- Deployed to the server on 2026-10-20 (`~/portfolio-manager`, service `portfolio-ui` active, mock broker). ChatGPT sign-in not done yet.
-- IBKR Pro with Tiered pricing (the `fees` default in config.yaml is Tiered). UK (LSE) trading permission not granted yet.
-- Next: open the tunnel and sign in to ChatGPT; IBKR paper account; `bash deploy/install-ibkr-gateway.sh` on the server; set `IBKR_ACCOUNT_ID` and `broker.type: ibkr`; look up conids in the web screen; LSE UK (L1) market data (GBP 1/month) once UK trading is open. Monthly contributions of about USD 3,000 start in January 2027.
+- Deployed to the server (`~/portfolio-manager`, services `portfolio-ui` and `ibkr-gateway` active). Broker is `ibkr`, connected to the live account; `IBKR_ACCOUNT_ID` is in the server's `.env`. Paper account exists but was not usable yet.
+- Gateway login first failed with `sso/validate` Access Denied; it worked after the user turned off Read-Only Access (Settings > Trading Platform) and the gateway was restarted.
+- conids filled in the server's `portfolio.yaml` (all LSEETF USD lines, verified with contract info): VWRA 375855577, AGGU 297482848, IGLN 86656182, SMH 458512500, ZAPP 880582689, WDGF 868938564. Avoid the US listings of SMH and WDGF (NASDAQ).
+- Account cash is SGD only, so `plan` stops with "USD 현금 정보를 찾을 수 없어요" until the user converts SGD to USD in IBKR.
+- IBKR Pro with Tiered pricing (the `fees` default in config.yaml is Tiered). LSE UK (L1) market data subscribed. UK trading permission status unconfirmed.
+- ChatGPT sign-in in the web screen not confirmed yet. Monthly contributions of about USD 3,000 start in January 2027.

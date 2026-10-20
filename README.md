@@ -99,7 +99,12 @@ Java와 IBKR Client Portal Gateway를 설치하고, 서버 안에서 오는 연�
 
 다른 서비스가 도는 서버에 같이 올려도 돼요. 앱은 `~/portfolio-manager` 폴더와 자기 서비스(`portfolio-ui`, `ibkr-gateway`)만 써요. 메모리 상한(웹 화면 256MB, IBKR Gateway 640MB)과 낮은 CPU 우선순위로 돌고, 메모리가 모자라면 다른 서비스보다 먼저 멈춰요. 웹 화면은 평소 60MB 정도 써요.
 
-로그 보기: `sudo journalctl -u portfolio-ui -f`
+IBKR 로그인에서 "Client login succeeds"가 떴는데도 연결이 안 되면 (Gateway 로그에 `sso/validate ... Access Denied`):
+- IBKR 설정의 Trading Platform > Read-Only Access를 꺼 보세요. 이 계좌에서는 이걸 끄고 나서 연결됐어요.
+- 다른 곳(웹, 휴대폰 앱, TWS)은 모두 로그아웃하고 로그인하세요.
+- Gateway는 몇 번 실패하면 재시도를 멈춰요. `sudo systemctl restart ibkr-gateway` 후 다시 로그인하세요.
+
+로그 보기: `sudo journalctl -u portfolio-ui -f` (Gateway는 `~/ibkr-gateway/logs/`)
 
 ## 예상 수수료
 
