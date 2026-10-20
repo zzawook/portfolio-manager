@@ -32,6 +32,19 @@ class IbkrSettings:
     base_url: str = "https://localhost:5000/v1/api"
     account_id: str = ""
     verify_ssl: bool = False
+    ca_file: str = ""  # the Gateway's own certificate; when set, the connection is verified against it
+
+    @property
+    def verify(self) -> bool | str:
+        return self.ca_file or self.verify_ssl
+
+
+@dataclass(frozen=True)
+class WebSettings:
+    # The address people use to reach the web screen from outside (an IP or a host name,
+    # without https://). Empty means the screen is only used on this machine or through a
+    # tunnel. When it is set, the screen asks for the password set with `set-password`.
+    public_host: str = ""
 
 
 @dataclass(frozen=True)
@@ -115,6 +128,7 @@ TOP_LEVEL_KEYS = {
     "portfolio_file",
     "instruments",
     "allocations",
+    "web",
 }
 PORTFOLIO_KEYS = {"instruments", "allocations"}
 INSTRUMENT_KEYS = {"name", "exchange", "currency", "conid"}
@@ -132,6 +146,7 @@ class Config:
     assistant: AssistantSettings = field(default_factory=AssistantSettings)
     portfolio_path: Path | None = None
     fees: FeeSettings = field(default_factory=FeeSettings)
+    web: WebSettings = field(default_factory=WebSettings)
 
     def symbol_targets(self) -> dict[str, float]:
         """Target weight per symbol in percent, summed across sleeves (IGLN core + satellite)."""
@@ -274,6 +289,7 @@ def parse_config(raw: dict[str, Any], path: Path | None = None, portfolio_path: 
     rules = _dataclass_from(Rules, raw.get("rules"), "rules")
     fees = _dataclass_from(FeeSettings, raw.get("fees"), "fees")
     assistant = _dataclass_from(AssistantSettings, raw.get("assistant"), "assistant")
+    web = _dataclass_from(WebSettings, raw.get("web"), "web")
 
     b = dict(raw.get("broker") or {})
     ibkr = _dataclass_from(IbkrSettings, b.pop("ibkr", None), "broker.ibkr")
@@ -289,6 +305,7 @@ def parse_config(raw: dict[str, Any], path: Path | None = None, portfolio_path: 
         assistant=assistant,
         portfolio_path=portfolio_path,
         fees=fees,
+        web=web,
     )
 
 

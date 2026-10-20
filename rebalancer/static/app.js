@@ -28,6 +28,8 @@ const INNER = [84, 90];
 
 const S = {
   app: null,
+  ibkr: null,
+  chatPaste: false,
   draft: null,
   holdings: null,
   holdingsError: null,
@@ -111,13 +113,16 @@ async function api(method, path, body) {
   try {
     res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   } catch {
-    throw new ApiError("서버에 연결할 수 없어요. 터미널에서 서버가 켜져 있는지 확인하세요.", 0, {});
+    throw new ApiError("서버에 연결할 수 없어요. 서버가 켜져 있는지, 인터넷이 연결돼 있는지 확인하세요.", 0, {});
   }
   let data = null;
   try {
     data = await res.json();
   } catch {
     data = null;
+  }
+  if (res.status === 401 && data && data.login) {
+    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
   }
   if (!res.ok) {
     const detail = data && typeof data.detail === "string" ? data.detail : `요청이 실패했어요 (HTTP ${res.status}).`;
@@ -626,10 +631,55 @@ function renderHeader() {
   $("#month-status").textContent = month.executed_at
     ? `${mm}월 주문함 (${dayLabel(month.executed_at)}, ${month.mode_label})`
     : `${mm}월 주문 전`;
+  $("#logout").hidden = !(S.app.web && S.app.web.password);
   const asOf = $("#as-of");
   if (S.holdingsLoading) asOf.textContent = "잔고 불러오는 중";
   else if (S.holdings) asOf.textContent = `${clock(S.holdings.fetched_at)} 기준`;
   else asOf.textContent = "";
+}
+
+// IBKR login status -------------------------------------------------------------------
+
+let ibkrTimer = null;
+
+async function checkIbkr() {
+  if (!S.app || S.app.broker.kind !== "ibkr") return;
+  clearTimeout(ibkrTimer);
+  let st = null;
+  try {
+    st = await api("GET", "/api/ibkr/status");
+  } catch {
+    st = null;
+  }
+  if (st) {
+    const reconnected = S.ibkr && !S.ibkr.authenticated && st.authenticated;
+    S.ibkr = st;
+    renderIbkrBanner();
+    if (reconnected) {
+      toast("IBKR에 연결됐어요.");
+      loadHoldings(true);
+    }
+  }
+  // Check often while waiting for a login, rarely once connected.
+  ibkrTimer = setTimeout(checkIbkr, st && st.authenticated ? 60000 : 5000);
+}
+
+function renderIbkrBanner() {
+  const box = $("#ibkr-banner");
+  const st = S.ibkr;
+  if (!st || st.authenticated) {
+    box.hidden = true;
+    return;
+  }
+  const parts = [el("p", { class: "ibkr-msg", text: st.message || "IBKR 로그인이 필요해요." })];
+  if (st.reachable !== false && st.needs_login && st.login_url) {
+    parts.push(
+      el("a", { class: "btn primary small", href: st.login_url, target: "_blank", rel: "noopener", text: "IBKR 로그인" }),
+      el("p", { class: "ibkr-hint", text: "새 탭에서 로그인하고 이 탭으로 돌아오면 자동으로 이어져요." }),
+    );
+  }
+  box.replaceChildren(el("div", { class: "ibkr-inner" }, icon("info", "critical"), ...parts));
+  box.hidden = false;
 }
 
 // Weights editor ----------------------------------------------------------------------
@@ -1746,34 +1796,88 @@ function renderRich(text) {
 
 function chatgptLoginCard(chat) {
   const auth = chat.auth || {};
+  // Opened from outside (not through 127.0.0.1): ChatGPT's return address won't open in
+  // this browser, so the person pastes it back here.
+  let remote = false;
+  try {
+    remote = Boolean(chat.callback) && new URL(chat.callback).origin !== window.location.origin;
+  } catch {
+    remote = false;
+  }
   const button = el("button", {
     type: "button",
     class: "btn primary",
     text: auth.signed_in ? "ChatGPT로 다시 로그인" : "ChatGPT로 로그인",
     onclick: async (e) => {
-      e.currentTarget.disabled = true;
+      const btn = e.currentTarget;
+      btn.disabled = true;
       try {
         const res = await api("POST", "/api/chatgpt/login");
-        window.location.assign(res.url);
+        if (remote) {
+          window.open(res.url, "_blank", "noopener");
+          S.chatPaste = true;
+          renderChat();
+        } else {
+          window.location.assign(res.url);
+        }
       } catch (err) {
         toast(err.message);
-        e.currentTarget.disabled = false;
+        btn.disabled = false;
       }
     },
   });
-  return el(
-    "div",
-    { class: "chat-off" },
+  const parts = [
     el("p", { text: chat.reason || "ChatGPT 계정으로 로그인하면 채팅이 켜져요." }),
     el("p", { text: "API 키는 필요 없고, 추가 요금 없이 ChatGPT 플랜 한도 안에서 써요." }),
-    el(
-      "p",
-      {},
-      "서버에서 돌릴 때는 SSH 터널을 같은 포트로 열어 둬야 로그인 뒤 이 화면으로 돌아와요. 돌아올 주소: ",
-      el("code", { text: chat.callback || "" }),
-    ),
     el("div", {}, button),
-  );
+  ];
+  if (remote) {
+    const input = el("input", {
+      type: "url",
+      class: "paste-input",
+      placeholder: `${chat.callback}?code=...`,
+      "aria-label": "로그인을 마친 탭의 주소",
+      autocomplete: "off",
+    });
+    const finish = el("button", {
+      type: "button",
+      class: "btn",
+      text: "로그인 마치기",
+      onclick: async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          S.app.chat = await api("POST", "/api/chatgpt/callback-url", { url: input.value });
+          S.chatPaste = false;
+          renderChat();
+          toast("ChatGPT에 로그인했어요. 이제 채팅을 쓸 수 있어요.");
+        } catch (err) {
+          toast(err.message);
+          btn.disabled = false;
+        }
+      },
+    });
+    parts.push(
+      el(
+        "p",
+        { class: S.chatPaste ? "paste-step active" : "paste-step" },
+        "로그인을 마치면 새 탭이 '사이트에 연결할 수 없음'으로 끝나요. 정상이에요. 그 탭의 주소창 주소(",
+        el("code", { text: chat.callback }),
+        "로 시작해요)를 통째로 복사해서 아래에 붙여 넣으세요.",
+      ),
+      el("div", { class: "paste-row" }, input, finish),
+    );
+  } else {
+    parts.push(
+      el(
+        "p",
+        {},
+        "서버에서 돌릴 때는 SSH 터널을 같은 포트로 열어 둬야 로그인 뒤 이 화면으로 돌아와요. 돌아올 주소: ",
+        el("code", { text: chat.callback || "" }),
+      ),
+    );
+  }
+  return el("div", { class: "chat-off" }, ...parts);
 }
 
 function renderChat() {
@@ -1949,6 +2053,17 @@ function bind() {
       sendChat(e.target.value);
     }
   });
+  $("#logout").addEventListener("click", async () => {
+    try {
+      await api("POST", "/api/session/logout");
+    } catch {
+      /* signed out anyway */
+    }
+    window.location.assign("/login");
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && S.ibkr && !S.ibkr.authenticated) checkIbkr();
+  });
   $("#chat-logout").addEventListener("click", async () => {
     try {
       const res = await api("POST", "/api/chatgpt/logout");
@@ -1994,6 +2109,7 @@ async function boot() {
   renderChat();
   renderWeights();
   loadHoldings(false);
+  checkIbkr();
   if (S.job && S.job.active) {
     renderBar();
     if (["running", "question"].includes(S.job.status)) startPolling();

@@ -10,7 +10,7 @@
 #   SSH_KEY=~/keys/hermes.pem bash deploy/push.sh ubuntu@<서버 주소>
 #
 # Running it again updates the code. On the server, config.yaml, portfolio.yaml (your
-# saved targets), .env, the ChatGPT sign-in and the run history are never overwritten.
+# saved targets), .env, the ChatGPT sign-in, the web password and the run history are never overwritten.
 set -euo pipefail
 
 HOST="${1:?사용법: bash deploy/push.sh <ssh 호스트> [서버 폴더]}"
@@ -28,7 +28,7 @@ remote "$HOST" "mkdir -p '$DIR'"
 tar -czf - \
   --exclude=./.git --exclude=./.venv --exclude='__pycache__' --exclude=./.pytest_cache \
   --exclude='*.egg-info' --exclude=./.ruff_cache --exclude=./.env --exclude='./state*.json' --exclude=./history \
-  --exclude='./chatgpt-auth.json*' --exclude=./config.yaml --exclude=./portfolio.yaml \
+  --exclude='./chatgpt-auth.json*' --exclude='./web-auth.json*' --exclude=./config.yaml --exclude=./portfolio.yaml \
   . | remote "$HOST" "tar -xzf - -C '$DIR'"
 
 for f in config.yaml portfolio.yaml; do

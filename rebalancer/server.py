@@ -1,8 +1,13 @@
-"""Local web screen, served on 127.0.0.1 only.
+"""Web screen, served on 127.0.0.1. From outside it is reached through Caddy (HTTPS).
 
 Security model
 - The server listens on 127.0.0.1. Every request must carry an expected Host
   header, which blocks DNS-rebinding pages from reading it.
+- When a password is set (web-auth.json, see webauth.py), every page and API call
+  needs a signed-in session cookie. Requests that come through Caddy (they carry
+  X-Forwarded-For) are refused until a password is set.
+- Caddy asks /auth/check before it passes anything to the IBKR Gateway's login
+  pages, so only signed-in people can reach the Gateway.
 - Every API call needs the per-run session token embedded in the page, so other
   websites open in the same browser cannot call the API.
 - The page refuses to be framed, so it cannot be overlaid to trick a click.
@@ -25,14 +30,16 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import parse_qsl, quote, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from .assistant import Assistant, AssistantBusy
 from .chatgpt_auth import CALLBACK_PATH, ChatGPTAuth, ChatGPTAuthError
+from .webauth import COOKIE_NAME, MAX_DAYS, LoginError, WebAuth
 from .brokers.ibkr import GatewayClient, IbkrBroker, IbkrError, account_id_for, search_contracts
 from .brokers.mock import MockBroker
 from .config import Config, ConfigError, load_config
@@ -203,6 +210,8 @@ class App:
         self.question_timeout = question_timeout
         self.port = port
         self._holdings: Optional[dict] = None
+        self.webauth: Optional[WebAuth] = None  # set by serve() / create_app()
+        self._last_reauth = 0.0
 
         self.mock: Optional[MockBroker] = None
         self.gateway: Optional[GatewayClient] = None
@@ -212,7 +221,7 @@ class App:
             self.mock_label = path.name
         else:
             settings = self.saved.broker.ibkr
-            self.gateway = gateway or GatewayClient(settings.base_url, account_id_for(self.saved), settings.verify_ssl)
+            self.gateway = gateway or GatewayClient(settings.base_url, account_id_for(self.saved), settings.verify)
 
         if keepalive and self.gateway is not None:
             threading.Thread(target=self._keep_gateway_alive, daemon=True, name="ibkr-tickle").start()
@@ -248,13 +257,52 @@ class App:
         }
 
     def _keep_gateway_alive(self, every: float = 60.0) -> None:
-        """Ping the Gateway so a logged-in IBKR session does not time out while the screen runs."""
+        """Ping the Gateway so a logged-in IBKR session does not time out while the screen
+        runs, and reopen the brokerage session when that works without a new login."""
         while True:
             time.sleep(every)
             try:
                 self.gateway.tickle()
             except Exception:  # not logged in yet, or the Gateway is down: try again later
                 pass
+            try:
+                self.ibkr_status(reauth=True)
+            except Exception:
+                pass
+
+    def ibkr_status(self, reauth: bool = False) -> dict:
+        """Where the IBKR login stands. With reauth, a brokerage session that dropped while
+        the IBKR login is still valid is opened again (never taking over another session)."""
+        if self.gateway is None:
+            return {"kind": self.kind}
+        view = {"kind": "ibkr", "reachable": True, "authenticated": False, "needs_login": False, "message": ""}
+        try:
+            st = self.gateway.auth_status()
+        except IbkrError as e:
+            if e.status == 0:
+                view.update(reachable=False, message="IBKR Gateway에 연결할 수 없어요. 서버에서 ibkr-gateway 서비스가 켜져 있는지 확인하세요.")
+            else:
+                view.update(needs_login=True, message="IBKR 로그인이 필요해요. 세션이 끝났거나 아직 로그인하지 않았어요.")
+            return view
+        if st.get("authenticated") and st.get("connected"):
+            view["authenticated"] = True
+            return view
+        if st.get("competing"):
+            view.update(
+                needs_login=True,
+                message="다른 곳(TWS, 휴대폰 앱, IBKR 웹)에서 IBKR에 로그인돼 있어요. 그쪽에서 로그아웃하고 다시 로그인하세요.",
+            )
+            return view
+        if reauth and time.monotonic() - self._last_reauth > 30:
+            self._last_reauth = time.monotonic()
+            try:
+                self.gateway.reauthenticate()
+                view["message"] = "IBKR 연결을 다시 여는 중이에요. 잠시 뒤 자동으로 이어져요."
+                return view
+            except IbkrError:
+                pass
+        view.update(needs_login=True, message="IBKR 로그인이 필요해요.")
+        return view
 
     def broker_for(self, cfg: Config):
         if self.kind == "mock":
@@ -288,6 +336,7 @@ class App:
                     "mode_label": MODE_LABELS.get(done["mode"], done["mode"]) if done else None,
                 },
                 "job": self.job_view(self.job) if self.job else None,
+                "web": {"password": bool(self.webauth and self.webauth.configured)},
             }
 
     def _chat_ready(self) -> bool:
@@ -686,6 +735,10 @@ class ChatBody(BaseModel):
     message: str
 
 
+class CallbackUrlBody(BaseModel):
+    url: str
+
+
 SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "X-Frame-Options": "DENY",
@@ -698,20 +751,64 @@ SECURITY_HEADERS = {
 }
 
 
-def create_app(ctx: App, allowed_hosts: set[str]) -> FastAPI:
+# Pages and files anyone may load: the login page itself, Caddy's check, and the
+# ChatGPT sign-in return (protected by its one-time state value).
+OPEN_PATHS = {"/login", "/auth/check", CALLBACK_PATH, "/static/login.css", "/static/favicon.svg"}
+IBKR_LOGIN_PATH = "/sso/Login?forwardTo=22&RL=1&ip2loc=US"
+
+
+def _via_proxy(request: Request) -> bool:
+    """The request came through Caddy, i.e. from outside this machine."""
+    return "x-forwarded-for" in request.headers
+
+
+def _client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "local"
+
+
+def _safe_next(target: str) -> str:
+    """Only paths on this site, so the login page can't be used to send people elsewhere."""
+    if not target.startswith("/") or target.startswith("//") or "\\" in target:
+        return "/"
+    return target
+
+
+def create_app(ctx: App, allowed_hosts: set[str], webauth: Optional[WebAuth] = None) -> FastAPI:
     app = FastAPI(title="portfolio-manager", docs_url=None, redoc_url=None, openapi_url=None)
+    if webauth is not None:
+        ctx.webauth = webauth
+
+    def signed_in(request: Request) -> bool:
+        return webauth is not None and webauth.check(request.cookies.get(COOKIE_NAME, ""))
+
+    def password_set() -> bool:
+        return webauth is not None and webauth.configured
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
         if request.headers.get("host", "") not in allowed_hosts:
             return JSONResponse({"detail": "허용되지 않은 주소로 들어왔어요."}, status_code=403)
-        if request.url.path.startswith("/api/"):
+        path = request.url.path
+        if path not in OPEN_PATHS:
+            if password_set():
+                if not signed_in(request):
+                    if path.startswith("/api/"):
+                        return JSONResponse({"detail": "로그인이 필요해요.", "login": True}, status_code=401)
+                    target = path + (f"?{request.url.query}" if request.url.query else "")
+                    return RedirectResponse(f"/login?next={quote(target, safe='')}", status_code=303)
+            elif _via_proxy(request):
+                return HTMLResponse(_setup_page(), status_code=503, headers=PAGE_HEADERS)
+        if path.startswith("/api/"):
             token = request.headers.get("x-session-token", "")
             if not secrets.compare_digest(token.encode(), ctx.token.encode()):
                 return JSONResponse({"detail": "세션이 맞지 않아요. 페이지를 새로고침하세요."}, status_code=403)
         response = await call_next(request)
         for k, v in SECURITY_HEADERS.items():
-            response.headers[k] = v
+            if k not in response.headers:  # a page may set its own policy (the login form)
+                response.headers[k] = v
         return response
 
     @app.exception_handler(ApiError)
@@ -726,6 +823,76 @@ def create_app(ctx: App, allowed_hosts: set[str]) -> FastAPI:
     async def on_config_error(request: Request, exc: ConfigError):
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
+    @app.get("/login", response_class=HTMLResponse)
+    def login_page(request: Request, next: str = "/") -> HTMLResponse:
+        if password_set() and signed_in(request):
+            return RedirectResponse(_safe_next(next), status_code=303)
+        message = "" if password_set() else _NO_PASSWORD
+        return HTMLResponse(_login_page(_safe_next(next), message), headers=LOGIN_HEADERS)
+
+    @app.post("/login")
+    async def login(request: Request):
+        form = dict(parse_qsl((await request.body()).decode("utf-8", "replace"), keep_blank_values=True))
+        target = _safe_next(form.get("next", "/"))
+        if webauth is None or not webauth.configured:
+            return HTMLResponse(_login_page(target, _NO_PASSWORD), status_code=503, headers=LOGIN_HEADERS)
+        try:
+            sid = webauth.login(form.get("password", ""), _client_key(request))
+        except LoginError as e:
+            status = 429 if "너무 많아요" in str(e) else 401
+            return HTMLResponse(_login_page(target, str(e)), status_code=status, headers=LOGIN_HEADERS)
+        response = RedirectResponse(target, status_code=303)
+        response.set_cookie(
+            COOKIE_NAME,
+            sid,
+            max_age=MAX_DAYS * 86400,
+            httponly=True,
+            samesite="lax",
+            secure=request.headers.get("x-forwarded-proto", "") == "https",
+            path="/",
+        )
+        return response
+
+    @app.post("/api/session/logout")
+    def logout(request: Request):
+        if webauth is not None:
+            webauth.logout(request.cookies.get(COOKIE_NAME, ""))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE_NAME, path="/")
+        return response
+
+    @app.get("/auth/check")
+    def auth_check(request: Request):
+        # Caddy asks this before passing a request on to the IBKR Gateway.
+        if password_set() and signed_in(request):
+            return Response(status_code=204)
+        method = request.headers.get("x-forwarded-method", "GET")
+        uri = request.headers.get("x-forwarded-uri", "/")
+        if method == "GET" and not uri.startswith("/v1/api/"):
+            return RedirectResponse(f"/login?next={quote(_safe_next(uri), safe='')}", status_code=303)
+        return JSONResponse({"detail": "로그인이 필요해요."}, status_code=401)
+
+    @app.get("/api/ibkr/status")
+    def ibkr_status(request: Request):
+        view = ctx.ibkr_status(reauth=True)
+        if view.get("kind") == "ibkr":
+            view["login_url"] = IBKR_LOGIN_PATH if _via_proxy(request) else "https://localhost:5000/"
+        return view
+
+    @app.post("/api/chatgpt/callback-url")
+    def chatgpt_callback_url(body: CallbackUrlBody):
+        # When the screen is opened from outside, ChatGPT's return address
+        # (http://127.0.0.1:.../auth/callback) does not open in the browser. The person
+        # pastes that address here and the server finishes the sign-in with it.
+        parts = urlsplit(body.url.strip())
+        if parts.path != CALLBACK_PATH or not parts.query:
+            raise ApiError(400, "붙여 넣은 주소가 ChatGPT 로그인 뒤의 주소가 아니에요. 주소창의 주소를 통째로 복사해 주세요.")
+        try:
+            ctx.chatgpt_callback(dict(parse_qsl(parts.query)))
+        except ChatGPTAuthError as e:
+            raise ApiError(400, str(e)) from e
+        return ctx.chat_view()
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         html = (STATIC / "index.html").read_text(encoding="utf-8")
@@ -733,7 +900,12 @@ def create_app(ctx: App, allowed_hosts: set[str]) -> FastAPI:
 
     @app.get("/static/{name}")
     def static(name: str):
-        types = {"app.js": "text/javascript", "app.css": "text/css", "favicon.svg": "image/svg+xml"}
+        types = {
+            "app.js": "text/javascript",
+            "app.css": "text/css",
+            "login.css": "text/css",
+            "favicon.svg": "image/svg+xml",
+        }
         if name not in types:
             return JSONResponse({"detail": "없는 파일이에요."}, status_code=404)
         return FileResponse(STATIC / name, media_type=types[name])
@@ -841,6 +1013,54 @@ def _callback_page(title: str, message: str) -> str:
     )
 
 
+_NO_PASSWORD = (
+    "아직 비밀번호가 없어요. 서버에서 다음 명령으로 먼저 정해 주세요: "
+    "cd ~/portfolio-manager && .venv/bin/python -m rebalancer set-password"
+)
+
+# The login page posts a plain form, so it may submit to this site (form-action 'self').
+LOGIN_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'"
+    ),
+}
+PAGE_HEADERS = {"Cache-Control": "no-store"}
+
+
+def _login_page(next_path: str, message: str = "") -> str:
+    from html import escape
+
+    error = f'<p class="error" role="alert">{escape(message)}</p>' if message else ""
+    return (
+        '<!doctype html><html lang="ko"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="color-scheme" content="light dark">'
+        "<title>로그인 - 포트폴리오</title>"
+        '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">'
+        '<link rel="stylesheet" href="/static/login.css"></head><body>'
+        '<main class="card"><h1>포트폴리오</h1><p class="lead">비밀번호를 입력하세요.</p>'
+        f"{error}"
+        '<form method="post" action="/login">'
+        f'<input type="hidden" name="next" value="{escape(next_path)}">'
+        '<label for="password">비밀번호</label>'
+        '<input id="password" name="password" type="password" autocomplete="current-password" required autofocus>'
+        '<button type="submit">로그인</button></form></main></body></html>'
+    )
+
+
+def _setup_page() -> str:
+    from html import escape
+
+    return (
+        '<!doctype html><html lang="ko"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>비밀번호를 먼저 정해 주세요</title></head><body><main>"
+        "<h1>비밀번호를 먼저 정해 주세요</h1>"
+        f"<p>{escape(_NO_PASSWORD)}</p></main></body></html>"
+    )
+
+
 def _port_free(port: int) -> bool:
     """True when nothing is listening on the port.
 
@@ -872,15 +1092,25 @@ def serve(
         raise ConfigError(f"{port}번 포트를 이미 쓰고 있어요. --port로 다른 번호를 주세요.")
     base = Path(config_path).resolve().parent
     load_env_file(base / ".env")
-    settings = load_config(config_path).assistant
+    cfg = load_config(config_path)
+    settings = cfg.assistant
     auth = ChatGPTAuth(base / "chatgpt-auth.json") if settings.provider == "chatgpt" else None
+    webauth = WebAuth(base / "web-auth.json")
     provider, reason = make_provider(settings, auth=auth)
     ctx = App(
         config_path, broker_kind, mock_file, today, provider=provider, chat_reason=reason, port=port, keepalive=True
     )
-    app = create_app(ctx, {f"127.0.0.1:{port}", f"localhost:{port}"})
+    hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    public = cfg.web.public_host.strip()
+    if public:
+        hosts |= {public, f"{public}:443"}
+    app = create_app(ctx, hosts, webauth)
     url = f"http://127.0.0.1:{port}/"
-    print(f"웹 화면: {url}")
+    print(f"웹 화면: {url}" + (f" (밖에서는 https://{public})" if public else ""))
+    if webauth.configured:
+        print("로그인: 비밀번호를 물어봐요.")
+    elif public:
+        print("로그인: 비밀번호가 아직 없어서 밖에서는 열리지 않아요. set-password로 정해 주세요.")
     print(f"브로커: {ctx.broker_info()['label']} ({ctx.broker_info()['detail']})")
     if provider is None:
         print(f"채팅: 꺼짐. {reason}")

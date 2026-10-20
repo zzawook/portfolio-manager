@@ -34,6 +34,8 @@ def _parser() -> argparse.ArgumentParser:
 
     sub.add_parser("resolve", help="IBKR에서 종목별 conid 후보 찾기")
 
+    sub.add_parser("set-password", help="웹 화면 비밀번호 정하기 (밖에서 접속할 때 필요)")
+
     sp = sub.add_parser("ui", help="로컬 웹 화면 열기 (비중 보기, 편집, AI 채팅, 주문)")
     sp.add_argument("--broker", choices=["mock", "ibkr"], help="설정의 broker.type 대신 쓸 브로커")
     sp.add_argument("--mock-file", help="모의 계좌 파일 (mock 브로커용)")
@@ -60,8 +62,41 @@ def _today(args) -> date:
     return date.fromisoformat(args.today) if getattr(args, "today", None) else date.today()
 
 
+def set_password(config_path: str, ask=None) -> int:
+    """Ask for a new web-screen password twice and store its hash next to config.yaml."""
+    import getpass
+
+    from .webauth import LoginError, WebAuth, password_problem
+
+    ask = ask or getpass.getpass
+    auth = WebAuth(Path(config_path).resolve().parent / "web-auth.json")
+    print("웹 화면 비밀번호를 정해요. 입력하는 글자는 화면에 보이지 않아요.")
+    if auth.configured:
+        print("이미 비밀번호가 있어요. 새 비밀번호로 바꾸면 로그인돼 있던 곳은 모두 로그아웃돼요.")
+    for _ in range(3):
+        first = ask("새 비밀번호: ")
+        problem = password_problem(first)
+        if problem:
+            print(problem)
+            continue
+        if ask("한 번 더: ") != first:
+            print("두 번 입력한 비밀번호가 달라요.")
+            continue
+        try:
+            auth.set_password(first)
+        except LoginError as e:
+            print(e)
+            return 1
+        print(f"저장했어요: {auth.path} (해시만 저장해요)")
+        return 0
+    print("비밀번호를 정하지 못했어요. 다시 실행해 주세요.")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "set-password":
+        return set_password(args.config)
     # API keys and the IBKR account number can live in .env next to config.yaml (kept out of git).
     load_env_file(Path(args.config).resolve().parent / ".env")
     try:
@@ -81,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "resolve":
             settings = cfg.broker.ibkr
-            client = GatewayClient(settings.base_url, account_id_for(cfg), settings.verify_ssl)
+            client = GatewayClient(settings.base_url, account_id_for(cfg), settings.verify)
             print("\n".join(resolve_candidates(cfg, client)))
             print("\nLSE 달러 라인의 conid를 portfolio.yaml의 instruments에 채우거나, 웹 화면에서 'IBKR에서 conid 찾기'로 고르세요.")
             return 0

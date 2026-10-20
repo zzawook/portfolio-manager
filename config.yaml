@@ -11,6 +11,7 @@ broker:
     base_url: https://localhost:5000/v1/api   # Client Portal Gateway 기본 주소
     account_id: ""                 # 비워 두고 환경 변수 IBKR_ACCOUNT_ID를 쓰면 git에 안 올라가요
     verify_ssl: false              # Gateway는 자체 서명 인증서를 써요
+    ca_file: ""                    # Gateway 인증서 파일. 채우면 그 인증서로 연결을 검증해요 (deploy/install-https.sh가 채워요)
 
 rules:
   monthly_contribution: 3000       # 월 적립액 (입금 확인 경고에만 써요)
@@ -54,3 +55,8 @@ assistant:
   base_url: ""
   max_tokens: 4096                 # chatgpt에서는 보내지 않아요 (플랜 경로가 이 값을 받지 않아요)
   reasoning_effort: ""             # openai, chatgpt만: none, low, medium, high
+
+# 밖에서 HTTPS로 접속할 때의 주소 (deploy/install-https.sh가 채워요). 비워 두면 이 컴퓨터나 SSH 터널로만 써요.
+# 채우면 웹 화면이 비밀번호를 물어봐요. 비밀번호는 `python -m rebalancer set-password`로 정해요.
+web:
+  public_host: ""

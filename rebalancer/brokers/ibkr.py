@@ -37,7 +37,9 @@ MAX_REPLY_ROUNDS = 5
 
 
 class IbkrError(RuntimeError):
-    pass
+    def __init__(self, message: str = "", status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status  # HTTP status from the Gateway, 0 if it could not be reached
 
 
 ACCOUNT_ENV = "IBKR_ACCOUNT_ID"
@@ -66,7 +68,7 @@ class GatewayClient:
         self,
         base_url: str,
         account_id: str,
-        verify_ssl: bool = False,
+        verify_ssl: bool | str = False,  # True, False, or the path of the Gateway's certificate
         timeout: float = 15,
         session: Optional[requests.Session] = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -87,12 +89,13 @@ class GatewayClient:
             resp = self.session.request(method, url, verify=self.verify, timeout=self.timeout, **kwargs)
         except requests.RequestException as e:
             raise IbkrError(
-                f"Gateway에 연결할 수 없어요 ({e}). Client Portal Gateway를 켜고 브라우저로 로그인했는지 확인하세요."
+                f"Gateway에 연결할 수 없어요 ({e}). Client Portal Gateway를 켜고 브라우저로 로그인했는지 확인하세요.",
+                status=0,
             ) from e
         if resp.status_code == 401:
-            raise IbkrError("Gateway 세션이 인증되지 않았어요. 브라우저에서 Gateway에 다시 로그인하세요.")
+            raise IbkrError("IBKR 로그인이 필요해요. 화면의 'IBKR 로그인'을 눌러 다시 로그인하세요.", status=401)
         if resp.status_code >= 400:
-            raise IbkrError(f"{method} {path} 실패: HTTP {resp.status_code} {resp.text[:300]}")
+            raise IbkrError(f"{method} {path} 실패: HTTP {resp.status_code} {resp.text[:300]}", status=resp.status_code)
         if not resp.content:
             return None
         try:
@@ -106,6 +109,12 @@ class GatewayClient:
     def tickle(self) -> dict:
         """Keep the Gateway's brokerage session from timing out."""
         return self._request("POST", "tickle") or {}
+
+    def reauthenticate(self) -> dict:
+        """Open the brokerage session again while the IBKR login (SSO) is still valid.
+
+        Never takes over a session that is open elsewhere (compete=false)."""
+        return self._request("POST", "iserver/auth/ssodh/init", json={"publish": True, "compete": False}) or {}
 
     def iserver_accounts(self) -> dict:
         return self._request("GET", "iserver/accounts") or {}
@@ -182,7 +191,7 @@ class IbkrBroker:
                 f"conid가 없는 종목이 있어요: {', '.join(missing)}. 웹 화면의 'IBKR에서 conid 찾기'나 resolve 명령으로 찾아서 portfolio.yaml에 채워 주세요."
             )
         self.cfg = cfg
-        self.client = client or GatewayClient(settings.base_url, account_id, settings.verify_ssl)
+        self.client = client or GatewayClient(settings.base_url, account_id, settings.verify)
         self.symbol_by_conid = {inst.conid: sym for sym, inst in cfg.instruments.items()}
         self._ready = False
 
@@ -191,7 +200,7 @@ class IbkrBroker:
             return
         status = self.client.auth_status()
         if not (status.get("authenticated") and status.get("connected")):
-            raise IbkrError("Gateway 세션이 인증되지 않았어요. 브라우저에서 https://localhost:5000 에 로그인하세요.")
+            raise IbkrError("IBKR 로그인이 필요해요. 화면의 'IBKR 로그인'을 눌러 다시 로그인하세요.", status=401)
         accounts = self.client.iserver_accounts().get("accounts", [])
         if self.client.account_id not in accounts:
             raise IbkrError(f"계좌({self.client.account_id})를 찾을 수 없어요. 이 세션에서 보이는 계좌: {accounts}")
@@ -268,7 +277,7 @@ class IbkrBroker:
 def _require_session(client: GatewayClient) -> None:
     status = client.auth_status()
     if not (status.get("authenticated") and status.get("connected")):
-        raise IbkrError("Gateway 세션이 인증되지 않았어요. 브라우저에서 https://localhost:5000 에 로그인하세요.")
+        raise IbkrError("IBKR 로그인이 필요해요. 화면의 'IBKR 로그인'을 눌러 다시 로그인하세요.", status=401)
 
 
 def find_contracts(client: GatewayClient, symbol: str, currency: str, exchange: str = "LSE") -> list[dict]:

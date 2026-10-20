@@ -588,6 +588,70 @@ select {
   margin-top: 4px;
 }
 
+/* IBKR login banner ------------------------------------------------------- */
+
+.ibkr-banner {
+  border-bottom: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--critical) 8%, var(--sheet));
+}
+
+.ibkr-inner {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 10px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: var(--fs-s);
+}
+
+.ibkr-msg {
+  flex: 1 1 260px;
+}
+
+.ibkr-hint {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 720px) {
+  .ibkr-inner {
+    padding: 10px 16px;
+  }
+}
+
+/* ChatGPT sign-in from outside: paste the return address --------------- */
+
+.paste-step {
+  margin-top: 12px;
+  color: var(--ink-2);
+}
+
+.paste-step.active {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.paste-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.paste-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-s);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-s);
+}
+
 /* Weights ------------------------------------------------------------------ */
 
 .pane-switch {
