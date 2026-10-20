@@ -74,6 +74,7 @@ if [ -f "$GW_DIR/root/conf.yaml" ]; then
 fi
 
 say "config.yaml 설정 (web.public_host$( [ -n "$GW_PEM" ] && echo ', broker.ibkr.ca_file'))"
+BEFORE="$(sha256sum config.yaml)"
 .venv/bin/python - "$APP_DIR/config.yaml" "$PUBLIC_HOST" "$GW_PEM" <<'PY'
 import re
 import sys
@@ -106,6 +107,7 @@ PY
 .venv/bin/python -m rebalancer check >/dev/null && echo "설정 확인 끝"
 
 say "Caddy 설정"
+HOST_RE="$(printf '%s' "$PUBLIC_HOST" | sed 's/[.]/\\./g')"
 TRUST=""
 if [ -n "$GW_PEM" ]; then
   TRUST="tls_server_name localhost
@@ -134,9 +136,16 @@ https://$PUBLIC_HOST {
 			uri /auth/check
 		}
 		reverse_proxy https://127.0.0.1:5000 {
-			# The Gateway only takes local connections; don't pass the visitor's address,
-			# and keep the web screen's own login cookie away from IBKR.
+			# IBKR only completes the login (and its session check) when the browser seems
+			# to be on https://localhost:5000, as with a local Gateway. Present every request
+			# that way, drop the visitor's address, and keep the web screen's own login
+			# cookie away from IBKR.
+			header_up Host localhost:5000
+			header_up Origin "^https://$HOST_RE(:443)?$" "https://localhost:5000"
+			header_up Referer "^https://$HOST_RE(:443)?/" "https://localhost:5000/"
 			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
 			header_up -X-Real-IP
 			header_up Cookie "pm_session=[^;]*;?\s*" ""
 			header_down Location "^https://(localhost|127\.0\.0\.1):5000" "https://{host}"
@@ -168,8 +177,10 @@ OOMScoreAdjust=200
 UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable caddy >/dev/null 2>&1
-sudo systemctl restart caddy
-sudo systemctl restart portfolio-ui
+if systemctl is-active --quiet caddy; then sudo systemctl reload caddy; else sudo systemctl restart caddy; fi
+if [ "$BEFORE" != "$(sha256sum config.yaml)" ] || ! systemctl is-active --quiet portfolio-ui; then
+  sudo systemctl restart portfolio-ui  # signs everyone out of the web screen
+fi
 sleep 3
 for s in caddy portfolio-ui; do printf '%s: %s\n' "$s" "$(systemctl is-active "$s")"; done
 
