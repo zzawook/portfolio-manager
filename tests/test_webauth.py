@@ -24,7 +24,7 @@ from rebalancer.webauth import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-PASSWORD = "correct horse battery"
+PASSWORD = "correct-horse-battery"
 
 
 class Clock:
@@ -81,7 +81,7 @@ def test_session_has_a_hard_limit(auth, clock):
 
 def test_new_password_signs_everyone_out(auth):
     sid = auth.login(PASSWORD, "c")
-    auth.set_password("another long password")
+    auth.set_password("another-long-password")
     assert not auth.check(sid)
     with pytest.raises(LoginError):
         auth.login(PASSWORD, "c")
@@ -89,19 +89,39 @@ def test_new_password_signs_everyone_out(auth):
 
 def test_password_changed_by_another_process_signs_out(auth, tmp_path, clock):
     sid = auth.login(PASSWORD, "c")
-    WebAuth(auth.path, clock=clock).set_password("changed elsewhere 123")
+    WebAuth(auth.path, clock=clock).set_password("changed-elsewhere-123")
     assert not auth.check(sid)
 
 
 def test_one_client_is_locked_after_repeated_failures(auth, clock):
-    for _ in range(CLIENT_FAILURES):
-        with pytest.raises(LoginError, match="맞지 않아요"):
+    for i in range(CLIENT_FAILURES - 1):
+        with pytest.raises(LoginError, match=f"{CLIENT_FAILURES - 1 - i}번 더 틀리면"):
             auth.login("wrong password", "attacker")
+    with pytest.raises(LoginError, match="너무 많아요"):
+        auth.login("wrong password", "attacker")  # the 5th failure says it is now locked
     with pytest.raises(LoginError, match="너무 많아요"):
         auth.login(PASSWORD, "attacker")  # even the right password waits
     assert auth.login(PASSWORD, "someone else")  # other clients are not affected
     clock.now += LOCK_SECONDS + 1
     assert auth.login(PASSWORD, "attacker")
+
+
+def test_new_password_clears_a_lockout(auth, clock):
+    for _ in range(CLIENT_FAILURES):
+        with pytest.raises(LoginError):
+            auth.login("wrong password", "me")
+    with pytest.raises(LoginError, match="너무 많아요"):
+        auth.login(PASSWORD, "me")
+    WebAuth(auth.path, clock=clock).set_password("brand-new-password1")  # e.g. set-password over SSH
+    assert auth.login("brand-new-password1", "me")
+
+
+def test_passwords_with_hangul_or_spaces_are_refused(tmp_path):
+    a = WebAuth(tmp_path / "w.json")
+    for bad in ("한글비밀번호입니다아", "ㅁㄴㅇㄹㅁㄴㅇㄹㅁㄴ", "has a space in it", "tab\tinside12345"):
+        with pytest.raises(LoginError, match="영문, 숫자, 기호로만"):
+            a.set_password(bad)
+    a.set_password("Ascii-Only_pass#2026")
 
 
 def test_everyone_is_locked_after_many_failures(auth):
@@ -113,12 +133,12 @@ def test_everyone_is_locked_after_many_failures(auth):
 
 
 def test_set_password_command(tmp_path, capsys):
-    answers = iter(["short", "a long enough one", "different one!!", "a long enough one", "a long enough one"])
+    answers = iter(["short", "a-long-enough-one", "different-one!!", "a-long-enough-one", "a-long-enough-one"])
     assert set_password(str(tmp_path / "config.yaml"), ask=lambda prompt: next(answers)) == 0
     auth = WebAuth(tmp_path / "web-auth.json")
-    assert auth.login("a long enough one", "c")
+    assert auth.login("a-long-enough-one", "c")
     out = capsys.readouterr().out
-    assert "10자 이상" in out and "달라요" in out
+    assert "10자 이상" in out and "달라요" in out and "17자 비밀번호를 저장했어요" in out
 
 
 # The web screen with a password ---------------------------------------------------------
@@ -144,7 +164,7 @@ def web(project, auth=None, gateway=None, monkeypatch=None):
 
 
 def sign_in(client):
-    res = client.post("/login", content="password=correct+horse+battery&next=%2F", headers={"Content-Type": "application/x-www-form-urlencoded"})
+    res = client.post("/login", content="password=correct-horse-battery&next=%2F", headers={"Content-Type": "application/x-www-form-urlencoded"})
     assert res.status_code == 303 and res.headers["location"] == "/"
     return res
 
@@ -176,7 +196,7 @@ def test_wrong_password_and_safe_redirect(project, auth):
     assert bad.status_code == 401 and "맞지 않아요" in bad.text and COOKIE_NAME not in bad.cookies
     evil = client.post(
         "/login",
-        content="password=correct+horse+battery&next=%2F%2Fevil.example",
+        content="password=correct-horse-battery&next=%2F%2Fevil.example",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     assert evil.status_code == 303 and evil.headers["location"] == "/"
@@ -186,7 +206,7 @@ def test_cookie_is_secure_behind_https(project, auth):
     _, client = web(project, auth)
     res = client.post(
         "/login",
-        content="password=correct+horse+battery&next=%2F",
+        content="password=correct-horse-battery&next=%2F",
         headers={"Content-Type": "application/x-www-form-urlencoded", "X-Forwarded-Proto": "https", "X-Forwarded-For": "9.9.9.9"},
     )
     cookie = res.headers["set-cookie"]

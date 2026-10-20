@@ -15,6 +15,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import threading
@@ -39,6 +40,9 @@ LOCK_SECONDS = 15 * 60
 SCRYPT_N = 2**14
 SCRYPT_R = 8
 SCRYPT_P = 1
+
+
+log = logging.getLogger("rebalancer.webauth")
 
 
 class LoginError(Exception):
@@ -77,10 +81,13 @@ def check_password(password: str, record: dict) -> bool:
 
 
 def password_problem(password: str) -> str:
+    if any(not (32 < ord(ch) < 127) for ch in password):
+        # Typed with the Korean input on, a terminal stores Hangul while a browser's
+        # password box (which turns the Korean input off) sends Latin letters, so the
+        # two never match. Allow only visible ASCII characters.
+        return "영문, 숫자, 기호로만 정해 주세요. 한글이나 공백이 섞여 있어요 (한/영 키를 확인하세요)."
     if len(password) < MIN_PASSWORD_LENGTH:
         return f"비밀번호는 {MIN_PASSWORD_LENGTH}자 이상이어야 해요."
-    if password.strip() != password:
-        return "비밀번호 앞뒤에 공백을 넣지 마세요."
     return ""
 
 
@@ -101,6 +108,7 @@ class WebAuth:
         self._all_failures: list[float] = []
         self._locked_until: dict[str, float] = {}
         self._all_locked_until = 0.0
+        self._seen_version = ""
 
     # The stored password ------------------------------------------------------------
 
@@ -153,10 +161,22 @@ class WebAuth:
             raise LoginError("아직 비밀번호가 없어요. 서버에서 set-password로 먼저 정해 주세요.")
         now = self.clock()
         with self._lock:
+            version = self._version(record)
+            if version != self._seen_version:
+                # A new password (set on the server, so by the owner) clears any lockout.
+                if self._seen_version:
+                    log.warning("web login: password changed, lockouts cleared")
+                self._seen_version = version
+                self._failures.clear()
+                self._all_failures.clear()
+                self._locked_until.clear()
+                self._all_locked_until = 0.0
             self._prune(now)
             if now < self._all_locked_until:
+                log.warning("web login: refused, everyone locked (client %s)", client)
                 raise LoginError(self._wait_message(self._all_locked_until, now))
             if now < self._locked_until.get(client, 0.0):
+                log.warning("web login: refused, client %s locked", client)
                 raise LoginError(self._wait_message(self._locked_until[client], now))
         ok = check_password(password, record)  # slow on purpose; done outside the lock
         with self._lock:
@@ -169,9 +189,16 @@ class WebAuth:
                 if len(self._all_failures) >= TOTAL_FAILURES:
                     self._all_locked_until = now + LOCK_SECONDS
                     self._all_failures.clear()
-                raise LoginError("비밀번호가 맞지 않아요.")
+                log.warning("web login: wrong password from %s", client)
+                if now < self._all_locked_until:
+                    raise LoginError(self._wait_message(self._all_locked_until, now))
+                if now < self._locked_until.get(client, 0.0):
+                    raise LoginError(self._wait_message(self._locked_until[client], now))
+                left = CLIENT_FAILURES - len(self._failures.get(client, []))
+                raise LoginError(f"비밀번호가 맞지 않아요. {left}번 더 틀리면 15분 동안 잠겨요.")
             self._failures.pop(client, None)
             self._locked_until.pop(client, None)
+            log.warning("web login: signed in from %s", client)
             sid = secrets.token_urlsafe(32)
             self._sessions[sid] = _Session(created=now, last_used=now, password_version=self._version(record))
             return sid

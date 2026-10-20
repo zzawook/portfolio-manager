@@ -87,7 +87,8 @@ def set_password(config_path: str, ask=None) -> int:
         except LoginError as e:
             print(e)
             return 1
-        print(f"저장했어요: {auth.path} (해시만 저장해요)")
+        print(f"{len(first)}자 비밀번호를 저장했어요: {auth.path} (해시만 저장해요)")
+        print("잠겨 있던 로그인도 풀려요. 브라우저에서 다시 로그인해 보세요.")
         return 0
     print("비밀번호를 정하지 못했어요. 다시 실행해 주세요.")
     return 1

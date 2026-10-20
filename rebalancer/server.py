@@ -1091,6 +1091,7 @@ def serve(
 
     if not _port_free(port):
         raise ConfigError(f"{port}번 포트를 이미 쓰고 있어요. --port로 다른 번호를 주세요.")
+    logging.basicConfig(level=logging.WARNING, format="%(message)s")
     base = Path(config_path).resolve().parent
     load_env_file(base / ".env")
     cfg = load_config(config_path)
