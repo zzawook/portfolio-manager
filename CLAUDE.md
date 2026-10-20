@@ -42,6 +42,6 @@ Jae Hyeok's personal app that keeps an IBKR account at target ETF weights (core/
 
 ## Status (2026-10-20)
 
-- Code is on GitHub `main`. Not yet deployed to the server.
+- Deployed to the server on 2026-10-20 (`~/portfolio-manager`, service `portfolio-ui` active, mock broker). ChatGPT sign-in not done yet.
 - IBKR Pro with Tiered pricing (the `fees` default in config.yaml is Tiered). UK (LSE) trading permission not granted yet.
-- Next: deploy and sign in to ChatGPT; IBKR paper account; `bash deploy/install-ibkr-gateway.sh` on the server; set `IBKR_ACCOUNT_ID` and `broker.type: ibkr`; look up conids in the web screen; LSE UK (L1) market data (GBP 1/month) once UK trading is open. Monthly contributions of about USD 3,000 start in January 2027.
+- Next: open the tunnel and sign in to ChatGPT; IBKR paper account; `bash deploy/install-ibkr-gateway.sh` on the server; set `IBKR_ACCOUNT_ID` and `broker.type: ibkr`; look up conids in the web screen; LSE UK (L1) market data (GBP 1/month) once UK trading is open. Monthly contributions of about USD 3,000 start in January 2027.
