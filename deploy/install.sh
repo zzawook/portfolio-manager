@@ -113,6 +113,12 @@ Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+# Share the server politely with other services (e.g. an agent already running there):
+# the app uses about 60 MB, is capped at 256 MB, runs at lower CPU priority, and is
+# the one the kernel stops first if memory runs out.
+MemoryMax=256M
+Nice=5
+OOMScoreAdjust=300
 
 [Install]
 WantedBy=multi-user.target

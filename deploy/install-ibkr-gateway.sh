@@ -78,6 +78,11 @@ WorkingDirectory=$GW_DIR
 ExecStart=/bin/bash $GW_DIR/bin/run.sh root/conf.yaml
 Restart=on-failure
 RestartSec=10
+# Keep the Java gateway from crowding out other services on the server.
+Environment=JAVA_TOOL_OPTIONS=-Xmx384m
+MemoryMax=640M
+Nice=5
+OOMScoreAdjust=300
 
 [Install]
 WantedBy=multi-user.target

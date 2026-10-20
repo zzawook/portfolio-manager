@@ -97,6 +97,8 @@ cd ~/portfolio-manager && bash deploy/install-ibkr-gateway.sh
 
 Java와 IBKR Client Portal Gateway를 설치하고, 서버 안에서 오는 연결만 받게 설정해요. 터널을 연 상태로 `https://127.0.0.1:5000` 에서 IBKR에 로그인하고, 서버의 `.env`에 `IBKR_ACCOUNT_ID`를, `config.yaml`의 `broker.type`에 `ibkr`를 넣은 뒤 `sudo systemctl restart portfolio-ui` 하면 돼요. IBKR 로그인은 하루에 한 번 이상 끊기니까, 주문하기 전에 다시 로그인하세요. 웹 화면이 켜져 있는 동안은 1분마다 세션을 유지해요.
 
+다른 서비스가 도는 서버에 같이 올려도 돼요. 앱은 `~/portfolio-manager` 폴더와 자기 서비스(`portfolio-ui`, `ibkr-gateway`)만 써요. 메모리 상한(웹 화면 256MB, IBKR Gateway 640MB)과 낮은 CPU 우선순위로 돌고, 메모리가 모자라면 다른 서비스보다 먼저 멈춰요. 웹 화면은 평소 60MB 정도 써요.
+
 로그 보기: `sudo journalctl -u portfolio-ui -f`
 
 ## 예상 수수료
