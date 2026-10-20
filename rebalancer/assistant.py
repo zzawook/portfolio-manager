@@ -5,8 +5,8 @@ preview the month's orders, and look up IBKR contracts. There is deliberately no
 tool that sends orders: orders go out only when the person presses the button in
 the plan dialog and confirms.
 
-Which model answers is a setting (see llm.py): Claude, OpenAI, or any
-OpenAI-compatible server.
+Which model answers is a setting (see llm.py): the user's ChatGPT plan (default),
+OpenAI or Anthropic with an API key, or any OpenAI-compatible server.
 """
 
 from __future__ import annotations

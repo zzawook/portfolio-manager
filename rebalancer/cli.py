@@ -34,7 +34,7 @@ def _parser() -> argparse.ArgumentParser:
 
     sub.add_parser("resolve", help="IBKR에서 종목별 conid 후보 찾기")
 
-    sp = sub.add_parser("ui", help="로컬 웹 화면 열기 (비중 보기, 편집, Claude 채팅, 주문)")
+    sp = sub.add_parser("ui", help="로컬 웹 화면 열기 (비중 보기, 편집, AI 채팅, 주문)")
     sp.add_argument("--broker", choices=["mock", "ibkr"], help="설정의 broker.type 대신 쓸 브로커")
     sp.add_argument("--mock-file", help="모의 계좌 파일 (mock 브로커용)")
     sp.add_argument("--today", help="날짜 지정 (YYYY-MM-DD, 테스트용)")
