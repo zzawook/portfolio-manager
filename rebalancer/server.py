@@ -212,6 +212,7 @@ class App:
         self._holdings: Optional[dict] = None
         self.webauth: Optional[WebAuth] = None  # set by serve() / create_app()
         self._last_reauth = 0.0
+        self._dropped_since: Optional[float] = None  # when a dropped brokerage session was first seen
 
         self.mock: Optional[MockBroker] = None
         self.gateway: Optional[GatewayClient] = None
@@ -279,28 +280,39 @@ class App:
         try:
             st = self.gateway.auth_status()
         except IbkrError as e:
+            self._dropped_since = None
             if e.status == 0:
                 view.update(reachable=False, message="IBKR Gateway에 연결할 수 없어요. 서버에서 ibkr-gateway 서비스가 켜져 있는지 확인하세요.")
             else:
                 view.update(needs_login=True, message="IBKR 로그인이 필요해요. 세션이 끝났거나 아직 로그인하지 않았어요.")
             return view
         if st.get("authenticated") and st.get("connected"):
+            self._dropped_since = None
             view["authenticated"] = True
             return view
         if st.get("competing"):
+            self._dropped_since = None
             view.update(
                 needs_login=True,
                 message="다른 곳(TWS, 휴대폰 앱, IBKR 웹)에서 IBKR에 로그인돼 있어요. 그쪽에서 로그아웃하고 다시 로그인하세요.",
             )
             return view
-        if reauth and time.monotonic() - self._last_reauth > 30:
-            self._last_reauth = time.monotonic()
+        now = time.monotonic()
+        if self._dropped_since is None:
+            self._dropped_since = now
+        # Right after a login the Gateway opens the brokerage session itself (a few
+        # seconds later); only step in when the session has stayed closed for a while.
+        if reauth and now - self._dropped_since >= REAUTH_AFTER and now - self._last_reauth > 30:
+            self._last_reauth = now
             try:
                 self.gateway.reauthenticate()
                 view["message"] = "IBKR 연결을 다시 여는 중이에요. 잠시 뒤 자동으로 이어져요."
                 return view
             except IbkrError:
                 pass
+        if st.get("connected"):
+            view["message"] = "IBKR 연결을 여는 중이에요. 잠시 뒤 자동으로 이어져요."
+            return view
         view.update(needs_login=True, message="IBKR 로그인이 필요해요.")
         return view
 
@@ -755,6 +767,7 @@ SECURITY_HEADERS = {
 # ChatGPT sign-in return (protected by its one-time state value).
 OPEN_PATHS = {"/login", "/auth/check", CALLBACK_PATH, "/static/login.css", "/static/favicon.svg"}
 IBKR_LOGIN_PATH = "/sso/Login?forwardTo=22&RL=1&ip2loc=US"
+REAUTH_AFTER = 20.0  # seconds a dropped brokerage session must stay closed before the app reopens it
 
 
 def _via_proxy(request: Request) -> bool:

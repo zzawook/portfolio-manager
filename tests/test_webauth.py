@@ -270,12 +270,38 @@ def test_ibkr_status_asks_for_a_login(project, auth, monkeypatch):
 
 def test_ibkr_status_reopens_a_dropped_session(project, auth, monkeypatch):
     gw = StatusGateway(status={"authenticated": False, "connected": True, "competing": False})
-    _, client = web(project, auth, gw, monkeypatch)
+    ctx, client = web(project, auth, gw, monkeypatch)
     sign_in(client)
     first = client.get("/api/ibkr/status").json()
-    assert gw.reauths == 1 and first["needs_login"] is False and "다시 여는 중" in first["message"]
+    # Right after a login the Gateway opens the session itself: don't step in yet.
+    assert gw.reauths == 0 and first["needs_login"] is False and "여는 중" in first["message"]
+    ctx._dropped_since -= 25  # still closed 25 seconds later
+    again = client.get("/api/ibkr/status").json()
+    assert gw.reauths == 1 and "다시 여는 중" in again["message"]
     client.get("/api/ibkr/status")
     assert gw.reauths == 1  # not again within 30 seconds
+
+
+def test_reauthenticate_uses_the_compete_flag_ibkr_requires():
+    from rebalancer.brokers.ibkr import GatewayClient
+
+    sent = {}
+
+    class Session:
+        def request(self, method, url, **kwargs):
+            sent.update(method=method, url=url, json=kwargs.get("json"))
+
+            class R:
+                status_code = 200
+                content = b"{}"
+
+                def json(self):
+                    return {}
+
+            return R()
+
+    GatewayClient("https://localhost:5000/v1/api", "U1", session=Session()).reauthenticate()
+    assert sent["url"].endswith("iserver/auth/ssodh/init") and sent["json"] == {"publish": True, "compete": True}
 
 
 def test_ibkr_status_never_takes_over_another_session(project, auth, monkeypatch):

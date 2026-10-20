@@ -113,8 +113,10 @@ class GatewayClient:
     def reauthenticate(self) -> dict:
         """Open the brokerage session again while the IBKR login (SSO) is still valid.
 
-        Never takes over a session that is open elsewhere (compete=false)."""
-        return self._request("POST", "iserver/auth/ssodh/init", json={"publish": True, "compete": False}) or {}
+        IBKR requires compete=true here ("Force compete capability must be used together
+        with compete flag"). Callers only do this when no other session is open
+        (auth status competing=false), so nothing is taken over."""
+        return self._request("POST", "iserver/auth/ssodh/init", json={"publish": True, "compete": True}) or {}
 
     def iserver_accounts(self) -> dict:
         return self._request("GET", "iserver/accounts") or {}
