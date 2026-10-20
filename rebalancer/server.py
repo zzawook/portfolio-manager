@@ -229,6 +229,7 @@ class App:
         self._holdings: Optional[dict] = None
         self.webauth: Optional[WebAuth] = None  # set by serve() / create_app()
         self._last_reauth = 0.0
+        self._outcomes_cache: Optional[tuple] = None
         self._dropped_since: Optional[float] = None  # when a dropped brokerage session was first seen
 
         self.mock: Optional[MockBroker] = None
@@ -345,11 +346,48 @@ class App:
     def _job_active(self) -> bool:
         return self.job is not None and self.job.active
 
+    def month_view(self, key: str) -> dict:
+        """This month's run, and whether its orders ended without any fill (then the month
+        is open again: day orders that never filled are cancelled by IBKR at the close)."""
+        done = State(self.state_path).execution(key)
+        view = {
+            "key": key,
+            "executed_at": done["at"] if done else None,
+            "mode_label": MODE_LABELS.get(done["mode"], done["mode"]) if done else None,
+            "unfilled": False,
+            "ended": [],
+        }
+        if not done:
+            return view
+        entries = []
+        rec = done
+        while rec:
+            entries.extend(rec.get("orders") or [])
+            rec = rec.get("previous")
+        coids = [str(o.get("coid") or "") for o in entries if o.get("coid") and o.get("status") != "rejected"]
+        cached = self._outcomes_cache
+        if cached and cached[0] == tuple(coids) and time.time() - cached[1] < 30:
+            outcomes = cached[2]
+        else:
+            try:
+                with self.broker_lock:
+                    broker = self.mock if self.kind == "mock" else IbkrBroker(self.saved, client=self.gateway)
+                    if self.kind == "mock":
+                        self.mock.reconfigure(self.saved)
+                    outcomes = broker.order_outcomes(coids) if coids else {}
+            except Exception:
+                return view  # can't tell: keep the month locked
+            self._outcomes_cache = (tuple(coids), time.time(), outcomes)
+        if any(v in ("filled", "working") for v in outcomes.values()):
+            return view
+        view["unfilled"] = True
+        view["ended"] = sorted({str(o.get("symbol")) for o in entries})
+        return view
+
     def state_view(self) -> dict:
-        state = State(self.state_path)
         today = self.today()
         key = month_key(today)
-        done = state.execution(key)
+        month = self.month_view(key)  # may ask the broker: outside the lock
         with self.lock:
             return {
                 "today": today.isoformat(),
@@ -359,11 +397,7 @@ class App:
                 "saved": copy.deepcopy(self.draft.saved),
                 "draft": self.draft.view(),
                 "chat": self.chat_view(),
-                "month": {
-                    "key": key,
-                    "executed_at": done["at"] if done else None,
-                    "mode_label": MODE_LABELS.get(done["mode"], done["mode"]) if done else None,
-                },
+                "month": month,
                 "job": self.job_view(self.job) if self.job else None,
                 "web": {"password": bool(self.webauth and self.webauth.configured)},
             }
@@ -503,19 +537,18 @@ class App:
         with self.lock:
             self.plans = {k: v for k, v in self.plans.items() if time.time() - v.created_at < PLAN_TTL_SECONDS}
             self.plans[rec.id] = rec
-        state = State(self.state_path)
         key = month_key(self.today())
-        done = state.execution(key)
         return {
             "id": rec.id,
             **plan_view(rec.cfg, rec.plan, rec.problems),
             "dirty": rec.dirty,
             "force_rebalance": force_rebalance,
             "broker": self.broker_info(),
-            "month": {"key": key, "executed_at": done["at"] if done else None},
+            "month": self.month_view(key),
         }
 
     def start_orders(self, plan_id: str, allow_repeat: bool = False) -> dict:
+        reopened = self.month_view(month_key(self.today()))["unfilled"]  # outside the lock
         with self.lock:
             if self._job_active():
                 raise ApiError(409, "진행 중인 주문이 있어요. 먼저 그 주문을 끝내 주세요.")
@@ -534,7 +567,7 @@ class App:
                 raise ApiError(400, "보낼 주문이 없어요.")
             today = self.today()
             key = month_key(today)
-            if State(self.state_path).executed(key) and not allow_repeat:
+            if State(self.state_path).executed(key) and not allow_repeat and not reopened:
                 raise ApiError(409, f"{key}에 이미 주문했어요. 다시 보내려면 '이번 달에 한 번 더 보낼게요'를 체크하세요.")
             if self.assistant and self.assistant.busy:
                 raise ApiError(409, "채팅이 초안을 고치는 중이에요. 답이 온 뒤에 다시 해 주세요.")

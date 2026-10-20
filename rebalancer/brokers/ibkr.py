@@ -137,6 +137,10 @@ class GatewayClient:
         data = self._request("GET", "iserver/account/orders") or {}
         return list(data.get("orders") or [])
 
+    def trades(self, days: int = 7) -> list[dict]:
+        """Fills of the last few days (IBKR keeps up to 7)."""
+        return list(self._request("GET", "iserver/account/trades", params={"days": str(days)}) or [])
+
     def tick_rules(self, conid: int) -> list[tuple[float, float]]:
         data = self._request("GET", f"iserver/contract/{conid}/info-and-rules", params={"isBuy": "true"}) or {}
         rules = (data.get("rules") or {}).get("incrementRules") or []
@@ -315,6 +319,19 @@ class IbkrBroker:
             pending=pending,
             tick_rules=dict(self._ticks),
         )
+
+    def order_outcomes(self, coids: list[str]) -> dict[str, str]:
+        """For orders sent by this app: 'filled' (at least partly), 'working', or 'ended'
+        (cancelled, expired at the end of the day, or rejected without a fill)."""
+        wanted = {c for c in coids if c}
+        if not wanted:
+            return {}
+        working = {str(o.get("order_ref") or "") for o in self.client.live_orders() if str(o.get("status") or "") in OPEN_STATUSES}
+        filled = {str(t.get("order_ref") or "") for t in self.client.trades()}
+        out = {}
+        for c in wanted:
+            out[c] = "filled" if c in filled else "working" if c in working else "ended"
+        return out
 
     def place_order(self, order: Order, client_order_id: str, confirm: ConfirmFn) -> dict:
         self.ensure_ready()

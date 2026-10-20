@@ -413,6 +413,24 @@ select {
 .slot-7 { fill: var(--s7); background: var(--s7); }
 .slot-8 { fill: var(--s8); background: var(--s8); }
 .slot-cash { fill: var(--cash); background: var(--cash); }
+.pending-0 { fill: url(#hatch-0); }
+.pending-1 { fill: url(#hatch-1); }
+.pending-2 { fill: url(#hatch-2); }
+.pending-3 { fill: url(#hatch-3); }
+.pending-4 { fill: url(#hatch-4); }
+.pending-5 { fill: url(#hatch-5); }
+.pending-6 { fill: url(#hatch-6); }
+.pending-7 { fill: url(#hatch-7); }
+.pending-8 { fill: url(#hatch-8); }
+.hatch-bg { opacity: 0.3; }
+/* Legend swatch for a holding with an unfilled order: the same stripes. */
+.sw.sw-pending {
+  background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.55) 0 2px, transparent 2px 5px);
+}
+.pending-note {
+  display: block;
+  color: var(--muted);
+}
 .ring-core { fill: var(--ink); background: var(--ink); }
 .ring-satellite { fill: var(--graphite); background: var(--graphite); }
 .ring-exit { fill: var(--exit-ring); background: var(--exit-ring); }

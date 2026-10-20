@@ -181,9 +181,13 @@ function model() {
   const P = S.draft.portfolio;
   const H = S.holdings;
   const total = H ? Math.max(H.total, 0) : 0;
-  const cash = H ? Math.max(H.cash, 0) : 0;
   const values = {};
   for (const p of (H && H.positions) || []) values[p.symbol] = p.value || 0;
+  // Buy orders sent but not filled yet: drawn hatched, and their cost is set aside from cash.
+  const pendingVals = {};
+  for (const o of (H && H.pending) || []) if (o.side === "BUY") pendingVals[o.symbol] = (pendingVals[o.symbol] || 0) + o.quantity * o.price;
+  const pendingTotal = Object.values(pendingVals).reduce((t, v) => t + v, 0);
+  const cash = H ? Math.max(H.cash - pendingTotal, 0) : 0;
   const share = (v) => (total > 0 ? (v / total) * 100 : 0);
 
   const symTarget = {};
@@ -199,10 +203,12 @@ function model() {
     const key = `${a.sleeve}:${a.symbol}`;
     const part = symTarget[a.symbol] > 0 ? a.target / symTarget[a.symbol] : 0;
     const value = (values[a.symbol] || 0) * part;
+    const pending = (pendingVals[a.symbol] || 0) * part;
     return {
       ...a,
       key,
       value,
+      pending,
       now: share(value),
       saved: key in saved ? saved[key] : null,
       shared: counts[a.symbol] > 1,
@@ -222,7 +228,7 @@ function model() {
     sleeves[s] = {
       target: mine.reduce((t, r) => t + r.target, 0),
       saved: S.app.saved.allocations.filter((a) => a.sleeve === s).reduce((t, a) => t + a.target, 0),
-      value: mine.reduce((t, r) => t + r.value, 0),
+      value: mine.reduce((t, r) => t + r.value + r.pending, 0),
     };
     sleeves[s].now = share(sleeves[s].value);
   }
@@ -301,8 +307,18 @@ function donutGroups(m) {
   const groups = [];
   for (const s of SLEEVES) {
     const segs = m.rows
-      .filter((r) => r.sleeve === s && r.value > 0)
-      .map((r, i) => ({ key: r.key, symbol: r.symbol, label: r.label, value: r.value, slot: r.slot, shared: r.shared, group: s, order: r.slot || 99 + i }));
+      .filter((r) => r.sleeve === s && r.value + r.pending > 0)
+      .map((r, i) => ({
+        key: r.key,
+        symbol: r.symbol,
+        label: r.label,
+        value: r.value + r.pending,
+        pending: r.pending,
+        slot: r.slot,
+        shared: r.shared,
+        group: s,
+        order: r.slot || 99 + i,
+      }));
     if (segs.length) groups.push({ key: s, segs });
   }
   const exitSegs = m.exits
@@ -329,7 +345,12 @@ function segInfo(m, key) {
   }
   const r = m.rows.find((x) => x.key === key);
   if (!r) return null;
-  if (S.view === "all") return { top: r.symbol, main: pct(r.now), sub: `목표 ${plain(r.target)}%  ${usd(r.value)}` };
+  if (S.view === "all")
+    return {
+      top: r.symbol,
+      main: pct(r.now),
+      sub: r.pending ? `체결 대기 ${usd(r.pending)} 포함하면 ${pct(((r.value + r.pending) / (m.total || 1)) * 100)}` : `목표 ${plain(r.target)}%  ${usd(r.value)}`,
+    };
   const g = m.sleeves[S.view];
   const inside = g.value > 0 ? (r.value / g.value) * 100 : 0;
   return { top: r.symbol, main: pct(inside), sub: `${SLEEVE_LABEL[S.view]} 안에서, 전체의 ${pct(r.now)}` };
@@ -381,23 +402,43 @@ function renderDonut(m) {
     const segLayer = svg("g");
     const ringLayer = svg("g");
     const placed = [];
+    const hatches = new Set();
     for (const g of arranged) {
       const gStart = a;
       for (const s of g.segs) {
         const sweep = (s.value / total) * Math.PI * 2;
         placed.push({ slot: s.slot, end: a + sweep });
         const label = s.key === "cash" ? `현금 ${pct(m.sleeves.cash.now)}` : `${s.symbol} ${pct((s.value / (m.total || 1)) * 100)}`;
-        const path = svg("path", {
-          d: arcPath(OUTER[0], OUTER[1], a, a + sweep),
-          class: `seg slot-${s.slot}${s.key === "cash" && S.view === "all" ? " static" : ""}`,
-          "fill-rule": "evenodd",
-          tabindex: "0",
-          role: "button",
-          "aria-label": label,
-          "data-key": s.key,
-          "data-group": g.key,
-        });
-        segLayer.append(path);
+        const filledSweep = s.pending ? sweep * ((s.value - s.pending) / s.value) : sweep;
+        if (filledSweep > 0) {
+          segLayer.append(
+            svg("path", {
+              d: arcPath(OUTER[0], OUTER[1], a, a + filledSweep),
+              class: `seg slot-${s.slot}${s.key === "cash" && S.view === "all" ? " static" : ""}`,
+              "fill-rule": "evenodd",
+              tabindex: "0",
+              role: "button",
+              "aria-label": label,
+              "data-key": s.key,
+              "data-group": g.key,
+            }),
+          );
+        }
+        if (s.pending) {
+          hatches.add(s.slot);
+          segLayer.append(
+            svg("path", {
+              d: arcPath(OUTER[0], OUTER[1], a + filledSweep, a + sweep),
+              class: `seg pending-${s.slot}`,
+              "fill-rule": "evenodd",
+              tabindex: filledSweep > 0 ? "-1" : "0",
+              role: "button",
+              "aria-label": `${s.symbol} 체결 대기 ${usd(s.pending)}`,
+              "data-key": s.key,
+              "data-group": g.key,
+            }),
+          );
+        }
         a += sweep;
       }
       if (S.view === "all" && g.key !== "cash") {
@@ -434,7 +475,14 @@ function renderDonut(m) {
         );
       });
     }
-    root.append(segLayer, seps, ringLayer);
+    // Diagonal stripes in the holding's colour for orders that have not filled yet.
+    const defs = svg("defs");
+    for (const slot of hatches) {
+      const pat = svg("pattern", { id: `hatch-${slot}`, patternUnits: "userSpaceOnUse", width: 6, height: 6, patternTransform: "rotate(45)" });
+      pat.append(svg("rect", { width: 6, height: 6, class: `hatch-bg slot-${slot}` }), svg("rect", { width: 2.4, height: 6, class: `slot-${slot}` }));
+      defs.append(pat);
+    }
+    root.append(defs, segLayer, seps, ringLayer);
   }
   root.append(svg("g", { id: "donut-center" }));
   drawCenter(segInfo(m, S.hover) || centerDefault(m));
@@ -550,8 +598,14 @@ function renderLegend(m) {
     const item = el(
       "li",
       { class: "legend-item clickable", tabindex: "0", role: "button", dataset: { key: s.key }, "aria-label": `${s.symbol}, 목록에서 찾기` },
-      el("span", { class: `sw slot-${s.slot}`, "aria-hidden": "true" }),
-      el("span", { class: "legend-name" }, s.symbol, s.label ? el("small", { text: s.label }) : null),
+      el("span", { class: `sw slot-${s.slot}${s.pending ? " sw-pending" : ""}`, "aria-hidden": "true" }),
+      el(
+        "span",
+        { class: "legend-name" },
+        s.symbol,
+        s.label ? el("small", { text: s.label }) : null,
+        s.pending ? el("small", { class: "pending-note", text: `체결 대기 ${usd(s.pending)}` }) : null,
+      ),
       el("span", { class: "legend-value" }, pct((s.value / gTotal) * 100), el("small", { text: `전체 ${pct((s.value / m.total) * 100)}${target}` })),
     );
     bindActivate(item, () => focusRow(s.key.startsWith("exit:") ? s.key : s.key));
@@ -651,9 +705,11 @@ function renderHeader() {
   chip.classList.toggle("live", Boolean(b.live));
   const month = S.app.month;
   const mm = Number(month.key.split("-")[1]);
-  $("#month-status").textContent = month.executed_at
-    ? `${mm}월 주문함 (${dayLabel(month.executed_at)}, ${month.mode_label})`
-    : `${mm}월 주문 전`;
+  $("#month-status").textContent = month.unfilled
+    ? `${mm}월 주문이 체결 안 됨 (다시 보낼 수 있어요)`
+    : month.executed_at
+      ? `${mm}월 주문함 (${dayLabel(month.executed_at)}, ${month.mode_label})`
+      : `${mm}월 주문 전`;
   $("#logout").hidden = !(S.app.web && S.app.web.password);
   const asOf = $("#as-of");
   if (S.holdingsLoading) asOf.textContent = "잔고 불러오는 중";
@@ -1421,7 +1477,18 @@ function renderPlan() {
       el("div", { class: "callout pencil" }, icon("info"), el("p", { text: "저장하지 않은 새 목표로 계산했어요. 주문을 보내면 새 목표도 함께 저장돼요." })),
     );
   let repeat = null;
-  if (p.month && p.month.executed_at) {
+  if (p.month && p.month.unfilled) {
+    body.append(
+      el(
+        "div",
+        { class: "callout" },
+        icon("info"),
+        el("p", {
+          text: `${dayLabel(p.month.executed_at)}에 보낸 주문(${(p.month.ended || []).join(", ")})은 체결되지 않고 끝났어요 (당일 주문은 장이 끝나면 IBKR이 취소해요). 그래서 이번 달 주문을 다시 보낼 수 있어요.`,
+        }),
+      ),
+    );
+  } else if (p.month && p.month.executed_at) {
     repeat = el("input", { type: "checkbox", id: "allow-repeat", onchange: () => renderPlanFoot() });
     body.append(
       el(
@@ -1537,7 +1604,7 @@ function renderPlanFoot() {
   const foot = $("#plan-foot");
   foot.replaceChildren();
   const repeat = $("#allow-repeat");
-  const needsRepeat = Boolean(p.month && p.month.executed_at);
+  const needsRepeat = Boolean(p.month && p.month.executed_at && !p.month.unfilled);
   const blocked = !p.orders.length || p.problems.length > 0 || (needsRepeat && !(repeat && repeat.checked));
   let label = p.two_step ? `매도 주문 보내기 (${p.send_count}건)` : `주문 보내기 (${p.send_count}건)`;
   if (p.dirty) label = `목표 저장하고 ${label}`;

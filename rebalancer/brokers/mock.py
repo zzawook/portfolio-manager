@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from ..config import Config, ConfigError
-from ..models import BUY, AccountSnapshot, Order, Quote
+from ..models import BUY, AccountSnapshot, Order, PendingOrder, Quote
 from . import ConfirmFn
 
 
@@ -29,6 +29,11 @@ class MockBroker:
         self.other_cash = {str(k).upper(): float(v) for k, v in (raw.get("other_cash") or {}).items()}
         self.fx_rates = {str(k).upper(): float(v) for k, v in (raw.get("fx_rates") or {}).items()}
         self.fx_markup = cfg.fees.auto_fx_pct / 100
+        # Optional: orders waiting to fill, e.g. pending: [{symbol: VWRA, side: BUY, quantity: 2, price: 192.1}]
+        self.pending = [
+            PendingOrder(str(o["symbol"]).upper(), str(o.get("side", "BUY")).upper(), float(o["quantity"]), float(o["price"]), "Submitted")
+            for o in (raw.get("pending") or [])
+        ]
         self.allow = cfg.allowlist
         self.submitted: list[tuple[str, Order]] = []
 
@@ -46,7 +51,12 @@ class MockBroker:
             unknown_positions=unknown,
             other_cash=dict(self.other_cash),
             fx_rates=dict(self.fx_rates),
+            pending=list(self.pending),
         )
+
+    def order_outcomes(self, coids: list[str]) -> dict[str, str]:
+        sent = {c for c, _ in self.submitted}
+        return {c: ("filled" if c in sent else "ended") for c in coids if c}
 
     def place_order(self, order: Order, client_order_id: str, confirm: ConfirmFn) -> dict:
         self.cash += order.cash_effect  # the estimated fee is charged as if it were the real one
