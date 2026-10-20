@@ -180,3 +180,42 @@ def test_safety_check_counts_converted_cash():
     snap = sgd_only()
     plan = build_plan(cfg, snap, date(2027, 1, 5))
     assert not [p for p in safety_problems(cfg, plan, snap) if "현금" in p]
+
+
+# Price steps and orders still waiting to fill ------------------------------------------
+
+
+def test_round_to_tick_follows_the_price_ladder():
+    from rebalancer.models import round_to_tick
+
+    lse = [(0.0, 0.0001), (50.0, 0.01), (100.0, 0.02), (200.0, 0.05)]
+    assert round_to_tick(101.39, lse, up=True) == 101.40
+    assert round_to_tick(101.39, lse, up=False) == 101.38
+    assert round_to_tick(80.505, lse, up=True) == 80.51
+    assert round_to_tick(201.01, lse, up=True) == 201.05
+    assert round_to_tick(12.345, None, up=True) == 12.35  # no rules: cents
+
+
+def test_plan_uses_tick_rules():
+    from dataclasses import replace
+
+    lse = [(0.0, 0.0001), (50.0, 0.01), (100.0, 0.02), (200.0, 0.05)]
+    snap = replace(snapshot(3000.0, prices={**PRICES, "SMH": 101.0}), tick_rules={s: lse for s in PRICES})
+    plan = build_plan(make_config(), snap, date(2027, 1, 5))
+    smh = [o for o in plan.buys if o.symbol == "SMH"]
+    assert smh and round(smh[0].limit_price / 0.02, 6).is_integer()
+
+
+def test_pending_buys_count_as_held_and_reserve_cash():
+    from dataclasses import replace
+
+    from rebalancer.models import PendingOrder
+
+    base = snapshot(3000.0)
+    pending = [PendingOrder("VWRA", "BUY", 6, 190.6), PendingOrder("IGLN", "BUY", 4, 95.3)]
+    plan = build_plan(make_config(), replace(base, pending=pending), date(2027, 1, 5))
+    assert not [o for o in plan.buys if o.symbol in ("VWRA", "IGLN")]  # already on their way
+    assert any("체결 대기 중인 주문" in w for w in plan.warnings)
+    spent = sum(o.notional + o.fee for o in plan.buys)
+    reserved = 6 * 190.6 + 4 * 95.3
+    assert spent <= 3000.0 - reserved

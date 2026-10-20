@@ -15,11 +15,12 @@ while they are held: never bought, and sold in full at the next rebalance.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from datetime import date
 from typing import Optional
 
 from .config import Config
-from .models import BUY, SELL, AccountSnapshot, Order, Plan, Quote, round_down_cents, round_up_cents
+from .models import BUY, SELL, AccountSnapshot, Order, Plan, Quote, round_to_tick
 
 CONTRIBUTION = "contribution"
 REBALANCE = "rebalance"
@@ -63,6 +64,25 @@ def spendable_cash(cfg: Config, snap: AccountSnapshot) -> float:
     return snap.cash + fx_cash(cfg, snap)[0]
 
 
+def apply_pending(cfg: Config, snap: AccountSnapshot) -> tuple[AccountSnapshot, list[str]]:
+    """Plan as if orders already sent had filled: open buys count as held and their cost
+    (with the estimated fee) is set aside from cash; open sells no longer count as held."""
+    if not snap.pending:
+        return snap, []
+    positions = dict(snap.positions)
+    cash = snap.cash
+    parts = []
+    for p in snap.pending:
+        if p.side == BUY:
+            positions[p.symbol] = positions.get(p.symbol, 0.0) + p.quantity
+            cash -= p.quantity * p.price + cfg.fees.estimate(p.quantity * p.price)
+        else:
+            positions[p.symbol] = max(0.0, positions.get(p.symbol, 0.0) - p.quantity)
+        parts.append(f"{p.symbol} {'매수' if p.side == BUY else '매도'} {p.quantity:g}주")
+    note = f"체결 대기 중인 주문이 있어요 ({', '.join(parts)}). 체결된 것으로 보고 계산했어요."
+    return replace(snap, positions=positions, cash=cash, pending=[]), [note]
+
+
 def build_plan(
     cfg: Config,
     snap: AccountSnapshot,
@@ -74,11 +94,12 @@ def build_plan(
         raise ValueError(f"unknown force_mode: {force_mode}")
 
     r = cfg.rules
+    snap, pending_notes = apply_pending(cfg, snap)
     targets = {s: pct / 100 for s, pct in cfg.symbol_targets().items()}
     held_exits = [s for s in cfg.exit_symbols if snap.positions.get(s, 0) > 0]
     for sym in held_exits:
         targets[sym] = 0.0
-    warnings: list[str] = []
+    warnings: list[str] = list(pending_notes)
 
     marks: dict[str, float] = {}
     for sym in targets:
@@ -123,7 +144,7 @@ def build_plan(
     else:
         max_orders = r.max_buy_orders if mode == CONTRIBUTION else len(targets)
         orders, _ = _buy_orders(
-            cfg, targets, marks, values, snap.quotes, invested + cash_available, cash_available, max_orders, warnings
+            cfg, targets, marks, values, snap.quotes, invested + cash_available, cash_available, max_orders, warnings, ticks=snap.tick_rules
         )
 
     for o in orders:
@@ -201,9 +222,11 @@ def _buy_orders(
     cash_available: float,
     max_orders: int,
     warnings: list[str],
+    ticks: Optional[dict] = None,
 ) -> tuple[list[Order], float]:
     """Fill the largest shortfalls first, in whole shares, within the cash on hand."""
     r = cfg.rules
+    ticks = ticks or {}
     shortfalls = []
     for sym, weight in targets.items():
         if sym not in marks:
@@ -221,7 +244,7 @@ def _buy_orders(
         ref = quotes[sym].buy_reference
         if not ref:
             continue
-        limit = round_up_cents(ref * (1 + r.limit_buffer_pct / 100))
+        limit = round_to_tick(ref * (1 + r.limit_buffer_pct / 100), ticks.get(sym), up=True)
         budget = min(gap, remaining, r.max_order_value)
         qty = math.floor(budget / limit)
         fee = 0.0
@@ -252,6 +275,7 @@ def _rebalance_orders(
     warnings: list[str],
 ) -> list[Order]:
     r = cfg.rules
+    ticks = snap.tick_rules
     sells: list[Order] = []
     proceeds = 0.0
     for sym, weight in targets.items():
@@ -269,7 +293,7 @@ def _rebalance_orders(
             continue
         if excess > r.max_order_value:
             warnings.append(f"{sym}: 1회 주문 한도 {r.max_order_value:,.0f}에 걸려서 일부만 팔아요.")
-        limit = round_down_cents(ref * (1 - r.limit_buffer_pct / 100))
+        limit = round_to_tick(ref * (1 - r.limit_buffer_pct / 100), ticks.get(sym), up=False)
         fee = cfg.fees.estimate(qty * limit)
         sells.append(Order(sym, SELL, qty, limit, fee))
         proceeds += qty * limit - fee
@@ -279,7 +303,7 @@ def _rebalance_orders(
         post_values[o.symbol] -= o.quantity * marks[o.symbol]
     cash_after = max(0.0, snap.cash - r.cash_reserve) + proceeds
     buys, _ = _buy_orders(
-        cfg, targets, marks, post_values, snap.quotes, investable_total, cash_after, len(targets), warnings
+        cfg, targets, marks, post_values, snap.quotes, investable_total, cash_after, len(targets), warnings, ticks=ticks
     )
     return sells + buys
 

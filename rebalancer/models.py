@@ -74,6 +74,17 @@ class Order:
 
 
 @dataclass
+class PendingOrder:
+    """An order sent to the broker that has not fully filled yet."""
+
+    symbol: str
+    side: str
+    quantity: float  # still open
+    price: float  # limit price
+    status: str = ""
+
+
+@dataclass
 class AccountSnapshot:
     cash: float
     positions: dict[str, float]
@@ -81,6 +92,8 @@ class AccountSnapshot:
     unknown_positions: list[str] = field(default_factory=list)
     other_cash: dict[str, float] = field(default_factory=dict)  # cash in other currencies (e.g. SGD)
     fx_rates: dict[str, float] = field(default_factory=dict)  # other currency -> base currency (1 SGD = 0.78 USD)
+    pending: list["PendingOrder"] = field(default_factory=list)  # sent but not yet filled
+    tick_rules: dict[str, list[tuple[float, float]]] = field(default_factory=dict)  # symbol -> [(from price, tick)]
 
 
 @dataclass
@@ -119,3 +132,18 @@ def round_up_cents(x: float) -> float:
 
 def round_down_cents(x: float) -> float:
     return math.floor(round(x * 100, 6)) / 100
+
+
+def round_to_tick(price: float, rules: list[tuple[float, float]] | None, up: bool) -> float:
+    """Round a limit price to the instrument's price step (up for buys, down for sells).
+
+    rules: [(lower edge, increment)], e.g. LSE ETFs use 0.01 from 50 and 0.02 from 100.
+    Without rules, whole cents."""
+    tick = 0.01
+    for edge, inc in sorted(rules or []):
+        if price >= edge:
+            tick = inc
+    steps = round(price / tick, 6)
+    n = math.ceil(steps) if up else math.floor(steps)
+    decimals = max(2, len(f"{tick:.10f}".rstrip("0").split(".")[1]))
+    return round(n * tick, decimals)

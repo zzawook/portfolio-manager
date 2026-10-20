@@ -203,6 +203,12 @@ def test_contract_search_needs_ibkr(project):
 class FakeGateway:
     account_id = "DU123"
 
+    def live_orders(self):
+        return getattr(self, "open_orders", [])
+
+    def tick_rules(self, conid):
+        return [(0.0, 0.0001), (50.0, 0.01), (100.0, 0.02), (200.0, 0.05)]
+
     def __init__(self):
         self.orders = []
         self.replies = []

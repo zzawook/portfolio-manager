@@ -28,7 +28,7 @@ import requests
 import urllib3
 
 from ..config import Config
-from ..models import AccountSnapshot, Order, Quote
+from ..models import AccountSnapshot, Order, PendingOrder, Quote, round_to_tick
 from . import ConfirmFn
 
 FIELD_LAST, FIELD_BID, FIELD_ASK = "31", "84", "86"
@@ -43,6 +43,8 @@ class IbkrError(RuntimeError):
 
 
 ACCOUNT_ENV = "IBKR_ACCOUNT_ID"
+# Order states that still hold cash or shares (sent, not finished).
+OPEN_STATUSES = {"PendingSubmit", "PreSubmitted", "Submitted", "PendingCancel"}
 
 
 def account_id_for(cfg: Config) -> str:
@@ -127,6 +129,25 @@ class GatewayClient:
             return None
         return rate if rate > 0 else None
 
+    def live_orders(self) -> list[dict]:
+        """Orders of this session that are still working. The first call only starts the
+        Gateway's order feed, so ask twice."""
+        self._request("GET", "iserver/account/orders", params={"force": "true"})
+        self.sleep(1.0)
+        data = self._request("GET", "iserver/account/orders") or {}
+        return list(data.get("orders") or [])
+
+    def tick_rules(self, conid: int) -> list[tuple[float, float]]:
+        data = self._request("GET", f"iserver/contract/{conid}/info-and-rules", params={"isBuy": "true"}) or {}
+        rules = (data.get("rules") or {}).get("incrementRules") or []
+        out = []
+        for r in rules:
+            try:
+                out.append((float(r["lowerEdge"]), float(r["increment"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
     def iserver_accounts(self) -> dict:
         return self._request("GET", "iserver/accounts") or {}
 
@@ -205,6 +226,7 @@ class IbkrBroker:
         self.client = client or GatewayClient(settings.base_url, account_id, settings.verify)
         self.symbol_by_conid = {inst.conid: sym for sym, inst in cfg.instruments.items()}
         self._ready = False
+        self._ticks: dict[str, list[tuple[float, float]]] = {}
 
     def ensure_ready(self) -> None:
         if self._ready:
@@ -259,19 +281,50 @@ class IbkrBroker:
             if rate:
                 fx_rates[cur] = rate
 
+        pending: list[PendingOrder] = []
+        for o in self.client.live_orders():
+            if str(o.get("acct") or o.get("account") or self.client.account_id) != self.client.account_id:
+                continue
+            if str(o.get("status") or "") not in OPEN_STATUSES:
+                continue
+            try:
+                sym = self.symbol_by_conid.get(int(o.get("conid")))
+                left = float(o.get("totalSize") or 0) - float(o.get("filledQuantity") or 0)
+                price = float(o.get("price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if sym and left > 0:
+                pending.append(PendingOrder(sym, str(o.get("side") or "").upper(), left, price, str(o.get("status"))))
+
+        for sym, inst in self.cfg.instruments.items():
+            if inst.conid and sym not in self._ticks:
+                try:
+                    self._ticks[sym] = self.client.tick_rules(inst.conid)
+                except IbkrError:
+                    pass
+
         quotes_by_conid = self.client.snapshot(list(self.symbol_by_conid))
         quotes = {self.symbol_by_conid[c]: q for c, q in quotes_by_conid.items() if c in self.symbol_by_conid}
         return AccountSnapshot(
-            cash=cash, positions=positions, quotes=quotes, unknown_positions=unknown, other_cash=other_cash, fx_rates=fx_rates
+            cash=cash,
+            positions=positions,
+            quotes=quotes,
+            unknown_positions=unknown,
+            other_cash=other_cash,
+            fx_rates=fx_rates,
+            pending=pending,
+            tick_rules=dict(self._ticks),
         )
 
     def place_order(self, order: Order, client_order_id: str, confirm: ConfirmFn) -> dict:
         self.ensure_ready()
         inst = self.cfg.instruments[order.symbol]
+        # Safety net: the price must sit on the instrument's price step or IBKR rejects it.
+        price = round_to_tick(order.limit_price, self._ticks.get(order.symbol), up=order.side == "BUY")
         body = {
             "conid": inst.conid,
             "orderType": "LMT",
-            "price": order.limit_price,
+            "price": price,
             "side": order.side,
             "quantity": order.quantity,
             "tif": "DAY",

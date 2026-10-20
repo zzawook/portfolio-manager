@@ -624,6 +624,10 @@ function renderNotice() {
       lines.push("아직 잔고가 없어요. 입금하고 첫 주문을 보내면 여기에 비중이 나타나요.");
     }
     else if (H.positions.length === 0 && H.cash > 0) lines.push("아직 보유 종목이 없어요. 첫 주문을 보내면 여기에 비중이 나타나요.");
+    if (H.pending && H.pending.length) {
+      const list = H.pending.map((o) => `${o.symbol} ${o.side_label} ${plain(o.quantity)}주 (지정가 ${usd(o.price, 2)})`).join(", ");
+      lines.push(`체결 대기 중인 주문: ${list}. 장이 열려 있고 지정가에 닿으면 체결돼요. 주문 계획은 이 주문이 체결된 것으로 보고 계산해요.`);
+    }
     if (H.missing_conids && H.missing_conids.length)
       lines.push(`conid가 없는 종목이 있어요: ${H.missing_conids.join(", ")}. 목록에서 종목을 펼쳐 'IBKR에서 찾기'로 채우고 저장하세요.`);
     if (H.unknown && H.unknown.length) lines.push(`목록에 없는 종목을 보유 중이에요: ${H.unknown.join(", ")}. 앱은 이 종목을 사고팔지 않아요.`);

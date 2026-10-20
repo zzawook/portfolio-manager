@@ -79,6 +79,12 @@ def test_snapshot_retries_after_preflight():
 class FakeClient:
     account_id = "DU123"
 
+    def live_orders(self):
+        return getattr(self, "open_orders", [])
+
+    def tick_rules(self, conid):
+        return [(0.0, 0.0001), (50.0, 0.01), (100.0, 0.02), (200.0, 0.05)]
+
     def __init__(self, order_responses=None, authenticated=True):
         self.order_responses = list(order_responses or [])
         self.replies = []
@@ -216,3 +222,16 @@ def test_snapshot_survives_a_missing_exchange_rate():
 
     snap = IbkrBroker(ibkr_config(), client=NoRate()).snapshot()
     assert snap.other_cash == {"SGD": 1550.0} and snap.fx_rates == {}
+
+
+def test_snapshot_reports_working_orders_and_tick_rules():
+    class Working(FakeClient):
+        open_orders = [
+            {"acct": "DU123", "conid": 1, "side": "BUY", "totalSize": 2, "filledQuantity": 0, "price": "192.10", "status": "PreSubmitted"},
+            {"acct": "DU123", "conid": 4, "side": "BUY", "totalSize": 1, "filledQuantity": 1, "price": "101.40", "status": "Submitted"},
+            {"acct": "DU123", "conid": 3, "side": "BUY", "totalSize": 2, "filledQuantity": 0, "price": "80.50", "status": "Cancelled"},
+        ]
+
+    snap = IbkrBroker(ibkr_config(), client=Working()).snapshot()
+    assert [(p.symbol, p.quantity, p.price) for p in snap.pending] == [("VWRA", 2.0, 192.10)]
+    assert snap.tick_rules["SMH"][2] == (100.0, 0.02)
