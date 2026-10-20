@@ -1043,6 +1043,7 @@ def _login_page(next_path: str, message: str = "") -> str:
         f"{error}"
         '<form method="post" action="/login">'
         f'<input type="hidden" name="next" value="{escape(next_path)}">'
+        '<input type="text" name="username" value="portfolio" autocomplete="username" hidden>'
         '<label for="password">비밀번호</label>'
         '<input id="password" name="password" type="password" autocomplete="current-password" required autofocus>'
         '<button type="submit">로그인</button></form></main></body></html>'

@@ -597,9 +597,12 @@ function renderNotice() {
   const box = $("#holdings-notice");
   const lines = [];
   let tone = "info";
-  if (S.holdingsError) {
+  const bannerSaysIt = S.ibkr && !S.ibkr.authenticated;
+  if (S.holdingsError && !bannerSaysIt) {
     tone = "critical";
     lines.push(S.holdingsError.message);
+  } else if (S.holdingsError) {
+    lines.push("IBKR에 로그인하면 잔고가 여기에 나타나요.");
   }
   const H = S.holdings;
   if (H) {
@@ -655,6 +658,7 @@ async function checkIbkr() {
     const reconnected = S.ibkr && !S.ibkr.authenticated && st.authenticated;
     S.ibkr = st;
     renderIbkrBanner();
+    renderNotice();
     if (reconnected) {
       toast("IBKR에 연결됐어요.");
       loadHoldings(true);

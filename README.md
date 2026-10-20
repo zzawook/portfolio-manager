@@ -77,34 +77,58 @@ OpenRouter는 `https://openrouter.ai/api/v1`, Ollama는 `http://localhost:11434/
 
 ## 서버(EC2)에 설치
 
-앱은 서버의 127.0.0.1에서만 열리고, 내 컴퓨터에서 SSH 터널로 들어가요. 보안 그룹에 포트를 새로 열 필요가 없어요 (열지 마세요).
+서버에 올리면 고정 주소(`https://<고정 IP>`)에서 비밀번호로 들어가요. IBKR 로그인도 같은 주소 안에서 해요.
 
-내 컴퓨터에서, 이 폴더 안에서:
+**1. 앱 설치 (내 컴퓨터에서, 이 폴더 안에서)**
 
 ```bash
-bash deploy/push.sh <ssh 호스트>        # 코드를 보내고 서버에서 설치 (다시 실행하면 업데이트)
-bash deploy/tunnel.sh <ssh 호스트>      # 터널을 열어 두고
-# 브라우저: http://127.0.0.1:8765
+SSH_KEY=~/키.pem bash deploy/push.sh ubuntu@<서버 주소>   # 다시 실행하면 업데이트
 ```
 
-`<ssh 호스트>`는 평소 `ssh` 뒤에 치는 이름이에요 (`~/.ssh/config`의 별칭이나 `ubuntu@주소`). `ssh -i 키.pem`으로 접속한다면 `SSH_KEY=~/키.pem bash deploy/push.sh ubuntu@주소`처럼 앞에 붙여요 (`tunnel.sh`도 같아요). Python이나 venv 패키지가 없으면 설치 스크립트가 sudo로 깔아요. 설치는 `portfolio-ui`라는 systemd 서비스로 등록돼서, 서버가 다시 켜져도 자동으로 실행돼요. 업데이트할 때 서버의 `config.yaml`, `portfolio.yaml`(저장한 목표), `.env`, ChatGPT 로그인, 실행 기록은 덮어쓰지 않아요.
+`~/.ssh/config`에 별칭이 있으면 `bash deploy/push.sh <별칭>`만 써도 돼요. Python이나 venv 패키지가 없으면 sudo로 깔아요. 앱은 `portfolio-ui`라는 systemd 서비스로 돌고, 서버가 다시 켜져도 자동으로 실행돼요. 업데이트할 때 서버의 `config.yaml`, `portfolio.yaml`(저장한 목표), `.env`, ChatGPT 로그인, 웹 비밀번호, 실행 기록은 덮어쓰지 않아요.
 
-IBKR를 연결할 때는 서버에서 한 번 더:
+**2. IBKR Gateway (서버에서)**
 
 ```bash
 cd ~/portfolio-manager && bash deploy/install-ibkr-gateway.sh
 ```
 
-Java와 IBKR Client Portal Gateway를 설치하고, 서버 안에서 오는 연결만 받게 설정해요. 터널을 연 상태로 `https://127.0.0.1:5000` 에서 IBKR에 로그인하고, 서버의 `.env`에 `IBKR_ACCOUNT_ID`를, `config.yaml`의 `broker.type`에 `ibkr`를 넣은 뒤 `sudo systemctl restart portfolio-ui` 하면 돼요. IBKR 로그인은 하루에 한 번 이상 끊기니까, 주문하기 전에 다시 로그인하세요. 웹 화면이 켜져 있는 동안은 1분마다 세션을 유지해요.
+서버의 `.env`에 `IBKR_ACCOUNT_ID`를, `config.yaml`의 `broker.type`에 `ibkr`를 넣고 `sudo systemctl restart portfolio-ui` 하세요.
 
-다른 서비스가 도는 서버에 같이 올려도 돼요. 앱은 `~/portfolio-manager` 폴더와 자기 서비스(`portfolio-ui`, `ibkr-gateway`)만 써요. 메모리 상한(웹 화면 256MB, IBKR Gateway 640MB)과 낮은 CPU 우선순위로 돌고, 메모리가 모자라면 다른 서비스보다 먼저 멈춰요. 웹 화면은 평소 60MB 정도 써요.
+**3. 고정 주소와 HTTPS (서버에서)**
+
+AWS에서 Elastic IP를 인스턴스에 붙이고, 보안 그룹에 TCP 80과 443을 열어요. 그다음:
+
+```bash
+cd ~/portfolio-manager && bash deploy/install-https.sh <고정 IP>
+.venv/bin/python -m rebalancer set-password      # 웹 화면 비밀번호 (10자 이상)
+```
+
+- Caddy가 Let's Encrypt에서 IP 주소용 인증서를 받아요. 6일짜리라 Caddy가 알아서 갱신해요.
+- 비밀번호를 정하기 전에는 밖에서 들어오는 접속을 모두 막아요. 비밀번호는 해시로만 저장돼요(`web-auth.json`, git에 안 올라가요).
+- 비밀번호를 5번 틀리면 그 접속 위치는 15분 동안 잠겨요. 한 번 로그인하면 12시간 동안 안 쓰거나 7일이 지나면 다시 물어봐요. 비밀번호를 바꾸면 모든 곳에서 로그아웃돼요.
+- 밖으로 열리는 포트는 80과 443뿐이에요. 앱(8765)과 Gateway(5000)는 서버 안에서만 열려요.
+
+**IBKR 로그인**
+
+화면 위에 'IBKR 로그인' 버튼이 뜨면 눌러서 새 탭에서 로그인하세요. 같은 주소 안에서 열리고, 앱에 로그인한 사람만 열 수 있어요. 로그인하면 화면이 자동으로 이어져요.
+- IBKR 세션이 잠깐 끊긴 거라면(로그인은 살아 있는 상태), 앱이 1분 안에 자동으로 다시 붙여요. 다른 곳(TWS, 휴대폰 앱)의 세션을 뺏지는 않아요.
+- IBKR은 개인 계좌의 API 로그인을 자동으로 할 수 없게 해요(직접 로그인과 2단계 인증 필요). 그래서 IBKR 로그인 자체가 만료되면(하루 한 번쯤) 버튼이 다시 떠요.
+
+**ChatGPT 로그인 (고정 주소에서)**
+
+채팅 창의 'ChatGPT로 로그인'을 누르면 새 탭이 열려요. 로그인을 마치면 그 탭이 "사이트에 연결할 수 없음"으로 끝나는데, 정상이에요. 그 탭의 주소창 주소(`http://127.0.0.1:8765/auth/callback?...`)를 복사해서 채팅 창에 붙여 넣으면 끝나요.
+
+SSH 터널(`bash deploy/tunnel.sh`)로 `http://127.0.0.1:8765` 에 들어가는 방법도 그대로 써요.
+
+다른 서비스가 도는 서버에 같이 올려도 돼요. 앱은 `~/portfolio-manager` 폴더와 자기 서비스(`portfolio-ui`, `ibkr-gateway`, `caddy`)만 써요. 메모리 상한(웹 화면 256MB, IBKR Gateway 640MB, Caddy 192MB)과 낮은 CPU 우선순위로 돌고, 메모리가 모자라면 다른 서비스보다 먼저 멈춰요.
 
 IBKR 로그인에서 "Client login succeeds"가 떴는데도 연결이 안 되면 (Gateway 로그에 `sso/validate ... Access Denied`):
 - IBKR 설정의 Trading Platform > Read-Only Access를 꺼 보세요. 이 계좌에서는 이걸 끄고 나서 연결됐어요.
 - 다른 곳(웹, 휴대폰 앱, TWS)은 모두 로그아웃하고 로그인하세요.
 - Gateway는 몇 번 실패하면 재시도를 멈춰요. `sudo systemctl restart ibkr-gateway` 후 다시 로그인하세요.
 
-로그 보기: `sudo journalctl -u portfolio-ui -f` (Gateway는 `~/ibkr-gateway/logs/`)
+로그 보기: `sudo journalctl -u portfolio-ui -f`, `sudo journalctl -u caddy -f` (Gateway는 `~/ibkr-gateway/logs/`)
 
 ## 예상 수수료
 
@@ -198,11 +222,12 @@ rebalancer/
   assistant.py           채팅: 초안만 고치는 도구들
   llm.py                 AI 공급자 연결 (ChatGPT 플랜, OpenAI, Anthropic, OpenAI 호환)
   chatgpt_auth.py        Sign in with ChatGPT 로그인과 토큰 관리
+  webauth.py             웹 화면 비밀번호 로그인 (밖에서 접속할 때)
   report.py              터미널 출력
   state.py               실행 기록과 목표 변경 journal
   envfile.py             .env 읽기
   brokers/mock.py        예시 파일로 동작하는 모의 브로커
   brokers/ibkr.py        Client Portal Gateway 연동
-deploy/                  서버 설치 (push, install, IBKR Gateway, 터널)
+deploy/                  서버 설치 (push, install, IBKR Gateway, HTTPS, 터널)
 tests/                   단위 테스트
 ```

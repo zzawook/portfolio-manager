@@ -113,6 +113,12 @@ if [ -n "$GW_PEM" ]; then
 fi
 sudo tee /etc/caddy/Caddyfile >/dev/null <<CADDY
 # portfolio-manager: HTTPS front door. Written by deploy/install-https.sh.
+{
+	# Browsers send no server name (SNI) when they open an IP address, so say which
+	# certificate to use then.
+	default_sni $PUBLIC_HOST
+}
+
 https://$PUBLIC_HOST {
 	tls {
 		# Let's Encrypt issues IP-address certificates only with the 6-day profile.
